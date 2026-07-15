@@ -17,3 +17,4 @@ frontend/dist/
 frontend/.npm-cache/
 __pycache__/
 *.pyc
+*.log
