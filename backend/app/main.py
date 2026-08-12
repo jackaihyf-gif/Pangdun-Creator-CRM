@@ -97,6 +97,16 @@ DELIVERABLE_TYPES = {
     "Other",
 }
 EXECUTION_STATUSES = {"待确认", "待发货", "运输中", "已签收待产出", "内容审核中", "已发布", "已结算", "已暂停/取消"}
+NEXT_ACTION_BY_STATUS = {
+    "待确认": "确认合作意向与报价",
+    "待发货": "确认收件信息并安排寄样",
+    "运输中": "跟踪物流并同步预计到达时间",
+    "已签收待产出": "确认内容排期与脚本方向",
+    "内容审核中": "完成内容审核并反馈修改意见",
+    "已发布": "回收内容链接与效果数据",
+    "已结算": "归档合作结果与复盘",
+    "已暂停/取消": "记录暂停原因与恢复条件",
+}
 
 SHIPMENT_STATUS_PROGRESS = {
     "待发货": 1,
@@ -495,7 +505,14 @@ def create_media(payload: MediaBase, db: Annotated[Session, Depends(get_db)], us
 
 @app.get("/api/media/{item_id}")
 def media_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(current_user)]):
-    item = db.query(Media).options(joinedload(Media.contacts), joinedload(Media.shipping_addresses).joinedload(ShippingAddress.contact), joinedload(Media.campaigns).joinedload(Campaign.product)).filter(Media.id == item_id).first()
+    item = db.query(Media).options(
+        joinedload(Media.contacts),
+        joinedload(Media.shipping_addresses).joinedload(ShippingAddress.contact),
+        joinedload(Media.campaigns).joinedload(Campaign.product),
+        joinedload(Media.campaigns).joinedload(Campaign.project),
+        joinedload(Media.campaigns).joinedload(Campaign.owner),
+        joinedload(Media.campaigns).joinedload(Campaign.activities).joinedload(Activity.user),
+    ).filter(Media.id == item_id).first()
     if not item:
         raise HTTPException(404, "Media not found")
     deliverables = (
@@ -518,6 +535,8 @@ def media_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: An
             "followers_or_traffic": item.followers_or_traffic,
             "audience_metric_type": item.audience_metric_type,
             "audience_metric_unit": item.audience_metric_unit,
+            "metric_source": item.metric_source,
+            "metric_verified_at": item.metric_verified_at,
             "media_tier": item.media_tier,
             "cooperation_status": item.cooperation_status,
             "notes": item.notes,
@@ -537,7 +556,20 @@ def media_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: An
             "notes": contact.notes,
         }) for contact in item.contacts],
         "shipping_addresses": [ShippingAddressOut.model_validate(address).model_dump(mode="json") for address in sorted(item.shipping_addresses, key=lambda address: (not address.is_default, address.id))],
-        "campaigns": [{"id": campaign.id, "project_id": campaign.project_id, "execution_status": campaign.execution_status, "updated_at": campaign.updated_at} for campaign in item.campaigns],
+        "products": list({campaign.product.id: {"id": campaign.product.id, "model": campaign.product.model, "full_name": campaign.product.full_name} for campaign in item.campaigns if campaign.product}.values()),
+        "campaigns": [jsonable_encoder({
+            "id": campaign.id,
+            "project": {"id": campaign.project.id, "name": campaign.project.name} if campaign.project else None,
+            "product": {"id": campaign.product.id, "model": campaign.product.model} if campaign.product else None,
+            "owner": {"id": campaign.owner.id, "name": campaign.owner.name} if campaign.owner else None,
+            "collaboration_type": campaign.collaboration_type,
+            "execution_status": campaign.execution_status,
+            "next_action": campaign.next_action,
+            "follow_up_date": campaign.follow_up_date,
+            "expected_publish_date": campaign.expected_publish_date,
+            "updated_at": campaign.updated_at,
+            "activities": [{"id": activity.id, "activity_type": activity.activity_type, "content": activity.content, "created_at": activity.created_at, "user": activity.user.name if activity.user else None} for activity in sorted(campaign.activities, key=lambda row: row.created_at, reverse=True)],
+        }) for campaign in sorted(item.campaigns, key=lambda row: row.updated_at, reverse=True)],
         "deliverables": [{"id": deliverable.id, "url": deliverable.url, "deliverable_type": deliverable.deliverable_type, "published_at": deliverable.published_at} for deliverable in deliverables],
     }
 
@@ -1181,7 +1213,7 @@ def list_campaigns(
     page: int = 1,
     page_size: int = 20,
 ):
-    query = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media), joinedload(Campaign.owner)).outerjoin(Project)
+    query = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media), joinedload(Campaign.owner), joinedload(Campaign.shipments)).outerjoin(Project)
     if history_only:
         query = query.filter(or_(Campaign.is_historical.is_(True), Project.is_archived.is_(True), Project.name.like(f"{HISTORICAL_PROJECT_PREFIX}%")))
     else:
@@ -1203,7 +1235,7 @@ def list_campaigns(
 
 @app.get("/api/collaborations/{item_id:int}")
 def collaboration_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(current_user)]):
-    item = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.media).joinedload(Media.contacts), joinedload(Campaign.owner), joinedload(Campaign.shipments).joinedload(Shipment.items), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items), joinedload(Campaign.activities).joinedload(Activity.user)).filter(Campaign.id == item_id).first()
+    item = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media).joinedload(Media.contacts), joinedload(Campaign.owner), joinedload(Campaign.shipments).joinedload(Shipment.items), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items), joinedload(Campaign.activities).joinedload(Activity.user)).filter(Campaign.id == item_id).first()
     if not item:
         raise HTTPException(404, "Collaboration not found")
     return item
@@ -1229,6 +1261,9 @@ def patch_collaboration(
         if data["execution_status"] not in EXECUTION_STATUSES:
             raise HTTPException(400, "Invalid execution status")
         item.execution_status = data["execution_status"]
+        if "next_action" not in data or not data.get("next_action"):
+            item.next_action = NEXT_ACTION_BY_STATUS.get(item.execution_status)
+        item.follow_up_done = item.execution_status == "已结算"
         if item.execution_status == "已发布":
             item.stage = "Published"
         elif item.execution_status == "已暂停/取消":
@@ -1236,11 +1271,14 @@ def patch_collaboration(
         db.add(Activity(campaign_id=item.id, user_id=user.id, activity_type="状态更新", content=f"执行状态更新为：{item.execution_status}"))
     if data.get("follow_up_done") is True:
         db.add(Activity(campaign_id=item.id, user_id=user.id, activity_type="待办完成", content=f"已完成待办：{item.next_action or '未填写下一步动作'}"))
-    if "tracking_number" in data:
+    if "tracking_number" in data or "oa_pi_number" in data:
         shipment = item.shipments[0] if item.shipments else Shipment(campaign_id=item.id, status=item.execution_status)
         if not item.shipments:
             db.add(shipment)
-        shipment.tracking_number = data["tracking_number"]
+        if "tracking_number" in data:
+            shipment.tracking_number = data["tracking_number"]
+        if "oa_pi_number" in data:
+            shipment.oa_pi_number = data["oa_pi_number"]
         if "execution_status" in data:
             shipment.status = item.execution_status
     add_audit_log(db, user, "update", "collaboration", item.id, before=before, after=data, reason=change_reason)
@@ -1260,6 +1298,7 @@ def patch_collaboration(
         "follow_up_date": refreshed.follow_up_date,
         "follow_up_priority": refreshed.follow_up_priority,
         "follow_up_done": refreshed.follow_up_done,
+        "oa_pi_number": refreshed.shipments[0].oa_pi_number if refreshed.shipments else None,
         "tracking_number": refreshed.shipments[0].tracking_number if refreshed.shipments else None,
         "notes": refreshed.notes,
     }
@@ -1283,6 +1322,9 @@ def bulk_patch_collaborations(payload: CollaborationBulkPatch, db: Annotated[Ses
             item.stage = "Published"
         elif data.get("execution_status") == "已暂停/取消":
             item.stage = "Paused"
+        if data.get("execution_status") and "next_action" not in data:
+            item.next_action = NEXT_ACTION_BY_STATUS.get(data["execution_status"])
+            item.follow_up_done = data["execution_status"] == "已结算"
         db.add(Activity(campaign_id=item.id, user_id=user.id, activity_type="批量更新", content="已通过工作台批量更新"))
     db.commit()
     return {"updated": len(items)}
@@ -1291,8 +1333,13 @@ def bulk_patch_collaborations(payload: CollaborationBulkPatch, db: Annotated[Ses
 @app.post("/api/campaigns", response_model=CampaignOut)
 def create_campaign(payload: CampaignBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)]):
     validate_campaign(payload)
-    item = Campaign(**payload.model_dump())
+    data = payload.model_dump()
+    if not data.get("next_action"):
+        data["next_action"] = NEXT_ACTION_BY_STATUS.get(data.get("execution_status"))
+    item = Campaign(**data)
     db.add(item)
+    db.flush()
+    db.add(Activity(campaign_id=item.id, user_id=user.id, activity_type="创建执行单", content=f"创建合作执行单，当前阶段：{item.execution_status}"))
     db.commit()
     db.refresh(item)
     return item

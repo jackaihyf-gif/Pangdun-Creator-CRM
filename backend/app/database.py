@@ -43,6 +43,10 @@ def apply_compat_migrations() -> None:
                 connection.execute(text("ALTER TABLE media ADD COLUMN audience_metric_unit VARCHAR(20)"))
             if "profile_links" not in columns:
                 connection.execute(text("ALTER TABLE media ADD COLUMN profile_links JSON DEFAULT '[]'"))
+            if "metric_source" not in columns:
+                connection.execute(text("ALTER TABLE media ADD COLUMN metric_source VARCHAR(255)"))
+            if "metric_verified_at" not in columns:
+                connection.execute(text("ALTER TABLE media ADD COLUMN metric_verified_at DATE"))
         if "campaigns" in tables:
             columns = {column["name"] for column in inspector.get_columns("campaigns")}
             additions = {

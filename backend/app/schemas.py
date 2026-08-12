@@ -53,6 +53,8 @@ class MediaBase(BaseModel):
     followers_or_traffic: float | None = None
     audience_metric_type: str | None = None
     audience_metric_unit: str | None = None
+    metric_source: str | None = None
+    metric_verified_at: date | None = None
     media_tier: str | None = None
     cooperation_status: str | None = None
     notes: str | None = None
@@ -203,6 +205,7 @@ class CollaborationPatch(BaseModel):
     owner_id: int | None = None
     collaboration_type: str | None = None
     execution_status: str | None = None
+    oa_pi_number: str | None = None
     tracking_number: str | None = None
     expected_publish_date: date | None = None
     notes: str | None = None

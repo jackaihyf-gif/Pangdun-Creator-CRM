@@ -71,6 +71,8 @@ class Media(Base):
     followers_or_traffic: Mapped[float | None] = mapped_column(Float)
     audience_metric_type: Mapped[str | None] = mapped_column(String(40))
     audience_metric_unit: Mapped[str | None] = mapped_column(String(20))
+    metric_source: Mapped[str | None] = mapped_column(String(255))
+    metric_verified_at: Mapped[date | None] = mapped_column(Date)
     media_tier: Mapped[str | None] = mapped_column(String(80))
     cooperation_status: Mapped[str | None] = mapped_column(String(120), index=True)
     notes: Mapped[str | None] = mapped_column(Text)
