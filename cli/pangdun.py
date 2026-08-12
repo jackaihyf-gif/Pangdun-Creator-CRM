@@ -279,7 +279,7 @@ def collaboration_command(args: argparse.Namespace, client: Client) -> None:
             rows = []
             for item in result["items"]:
                 rows.append({**item, "media_name": (item.get("media") or {}).get("name"), "project_name": (item.get("project") or {}).get("name"), "owner_name": (item.get("owner") or {}).get("name")})
-            print_table(rows, [("id", "ID"), ("media_name", "媒体"), ("project_name", "项目"), ("execution_status", "状态"), ("follow_up_date", "跟进日期"), ("owner_name", "负责人")])
+            print_table(rows, [("id", "ID"), ("media_name", "媒体"), ("project_name", "项目"), ("execution_status", "状态"), ("workflow_label", "跟进健康"), ("follow_up_date", "跟进日期"), ("owner_name", "负责人")])
     elif args.collaboration_action == "show":
         dump_json(client.request(f"/api/collaborations/{args.id}"))
     elif args.collaboration_action == "update":
@@ -310,7 +310,7 @@ def tasks_command(args: argparse.Namespace, client: Client) -> None:
     if args.json:
         dump_json(result)
     else:
-        print_table(result["items"], [("id", "ID"), ("media_name", "媒体"), ("project_name", "项目"), ("next_action", "下一步"), ("follow_up_date", "日期"), ("execution_status", "状态"), ("owner", "负责人")])
+        print_table(result["items"], [("id", "ID"), ("media_name", "媒体"), ("project_name", "项目"), ("next_action", "下一步"), ("workflow_label", "跟进健康"), ("follow_up_date", "日期"), ("execution_status", "状态"), ("owner", "负责人")])
 
 
 def audit_command(args: argparse.Namespace, client: Client) -> None:

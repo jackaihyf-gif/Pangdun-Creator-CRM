@@ -692,6 +692,7 @@ body {
 }
 
 .dialog-modal {
+  --drawer-radius: 15px;
   top: 50%;
   right: auto;
   bottom: auto;
@@ -699,7 +700,7 @@ body {
   width: min(500px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 32px));
   transform: translate(-50%, -50%);
-  border-radius: 15px;
+  border-radius: var(--drawer-radius);
   box-shadow: 0 26px 80px rgba(49, 43, 37, .2);
   animation: modal-in .16s ease-out;
 }

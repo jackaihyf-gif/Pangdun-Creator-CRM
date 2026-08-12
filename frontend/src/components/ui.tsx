@@ -252,6 +252,7 @@ type Notice = { message: string; description?: string };
 
 export const Notification = {
   success: ({ message, description }: Notice) => toast.success(message, { description }),
+  warning: ({ message, description }: Notice) => toast.warning(message, { description }),
   error: ({ message, description }: Notice) => toast.error(message, { description }),
 };
 

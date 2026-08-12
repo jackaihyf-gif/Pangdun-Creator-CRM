@@ -70,6 +70,41 @@ describe('合作执行关键交互', () => {
     expect(screen.getByTestId('selected-status')).toHaveTextContent('全部');
   });
 
+  it('在待办列表中标记缺失的下一步安排', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/workbench')) return jsonResponse({
+        kpis: { collaboration_total: 1 },
+        items: [{
+          id: 18,
+          media_name: 'Missing Plan Creator',
+          project_name: 'Launch Project',
+          execution_status: '待确认',
+          next_action: null,
+          follow_up_date: null,
+          workflow_health: 'missing_both',
+          workflow_label: '待补行动/日期',
+        }],
+      });
+      return jsonResponse({ items: [] });
+    }));
+
+    render(<Workbench
+      canEdit={false}
+      status=""
+      search=""
+      refreshToken={0}
+      queue="all"
+      autoResolveQueue={false}
+      onQueueResolved={() => undefined}
+      onQueueChange={() => undefined}
+      onOpen={() => undefined}
+    />);
+
+    expect(await screen.findByText('Missing Plan Creator')).toBeInTheDocument();
+    expect(screen.getByText('待补行动/日期')).toBeInTheDocument();
+  });
+
   it('登记内容后重新读取详情并刷新内容页签', async () => {
     let contentCreated = false;
     let detailReads = 0;
@@ -118,6 +153,11 @@ describe('合作执行关键交互', () => {
     />);
 
     await screen.findByRole('button', { name: /内容产出/ });
+    await userEvent.click(screen.getByRole('button', { name: '3 天后' }));
+    const scheduledDate = new Date();
+    scheduledDate.setDate(scheduledDate.getDate() + 3);
+    const expectedDate = `${scheduledDate.getFullYear()}-${String(scheduledDate.getMonth() + 1).padStart(2, '0')}-${String(scheduledDate.getDate()).padStart(2, '0')}`;
+    expect(screen.getByLabelText('跟进日期')).toHaveValue(expectedDate);
     await userEvent.click(screen.getByRole('button', { name: /内容产出/ }));
     expect(await screen.findByText('尚未登记内容产出')).toBeInTheDocument();
 

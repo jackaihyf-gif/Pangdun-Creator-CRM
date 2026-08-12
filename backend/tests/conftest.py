@@ -63,6 +63,7 @@ def seeded_collaboration():
         return {
             "campaign_id": campaign.id,
             "project_id": project.id,
+            "media_id": media.id,
             "headers": {"Authorization": f"Bearer {token}"},
         }
 

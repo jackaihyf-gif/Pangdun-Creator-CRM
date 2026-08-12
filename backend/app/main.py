@@ -107,6 +107,7 @@ NEXT_ACTION_BY_STATUS = {
     "已结算": "归档合作结果与复盘",
     "已暂停/取消": "记录暂停原因与恢复条件",
 }
+FOLLOW_UP_CLOSED_STATUSES = {"已结算", "已暂停/取消"}
 
 SHIPMENT_STATUS_PROGRESS = {
     "待发货": 1,
@@ -114,6 +115,32 @@ SHIPMENT_STATUS_PROGRESS = {
     "已签收待产出": 3,
 }
 HISTORICAL_PROJECT_PREFIX = "历史导入"
+
+
+def collaboration_workflow_health(item: Campaign) -> dict[str, Any]:
+    if item.execution_status in FOLLOW_UP_CLOSED_STATUSES:
+        return {"workflow_health": "closed", "workflow_label": "无需跟进", "workflow_warnings": []}
+    if item.follow_up_done:
+        return {
+            "workflow_health": "needs_next_step",
+            "workflow_label": "待续排",
+            "workflow_warnings": ["当前待办已完成，请安排新的下一步行动和日期"],
+        }
+    missing_action = not (item.next_action or "").strip()
+    missing_date = item.follow_up_date is None
+    if missing_action and missing_date:
+        return {
+            "workflow_health": "missing_both",
+            "workflow_label": "待补行动/日期",
+            "workflow_warnings": ["缺少下一步行动", "缺少跟进日期"],
+        }
+    if missing_action:
+        return {"workflow_health": "missing_action", "workflow_label": "待补行动", "workflow_warnings": ["缺少下一步行动"]}
+    if missing_date:
+        return {"workflow_health": "missing_date", "workflow_label": "待排期", "workflow_warnings": ["缺少跟进日期"]}
+    if item.follow_up_date < date.today():
+        return {"workflow_health": "overdue", "workflow_label": "已逾期", "workflow_warnings": ["跟进日期已逾期"]}
+    return {"workflow_health": "ready", "workflow_label": "已安排", "workflow_warnings": []}
 
 Base.metadata.create_all(bind=engine)
 apply_compat_migrations()
@@ -1230,7 +1257,15 @@ def list_campaigns(
         query = query.filter(Campaign.sample_status == sample_status)
     if owner_id:
         query = query.filter(Campaign.owner_id == owner_id)
-    return list_payload(query.order_by(Campaign.updated_at.desc()), page, page_size)
+    ordered = query.order_by(Campaign.updated_at.desc())
+    total = ordered.count()
+    rows = ordered.offset((page - 1) * page_size).limit(page_size).all()
+    items = []
+    for row in rows:
+        encoded = jsonable_encoder(row)
+        encoded.update(collaboration_workflow_health(row))
+        items.append(encoded)
+    return {"items": items, "total": total}
 
 
 @app.get("/api/collaborations/{item_id:int}")
@@ -1238,7 +1273,9 @@ def collaboration_detail(item_id: int, db: Annotated[Session, Depends(get_db)], 
     item = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media).joinedload(Media.contacts), joinedload(Campaign.owner), joinedload(Campaign.shipments).joinedload(Shipment.items), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items), joinedload(Campaign.activities).joinedload(Activity.user)).filter(Campaign.id == item_id).first()
     if not item:
         raise HTTPException(404, "Collaboration not found")
-    return item
+    result = jsonable_encoder(item)
+    result.update(collaboration_workflow_health(item))
+    return result
 
 
 @app.patch("/api/collaborations/{item_id:int}")
@@ -1261,7 +1298,7 @@ def patch_collaboration(
         if data["execution_status"] not in EXECUTION_STATUSES:
             raise HTTPException(400, "Invalid execution status")
         item.execution_status = data["execution_status"]
-        if "next_action" not in data or not data.get("next_action"):
+        if "next_action" not in data:
             item.next_action = NEXT_ACTION_BY_STATUS.get(item.execution_status)
         item.follow_up_done = item.execution_status == "已结算"
         if item.execution_status == "已发布":
@@ -1284,7 +1321,7 @@ def patch_collaboration(
     add_audit_log(db, user, "update", "collaboration", item.id, before=before, after=data, reason=change_reason)
     db.commit()
     refreshed = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.media), joinedload(Campaign.owner), joinedload(Campaign.shipments)).filter(Campaign.id == item_id).first()
-    return {
+    result = {
         "id": refreshed.id,
         "project_id": refreshed.project_id,
         "project_name": refreshed.project.name if refreshed.project else "未归属项目",
@@ -1302,6 +1339,8 @@ def patch_collaboration(
         "tracking_number": refreshed.shipments[0].tracking_number if refreshed.shipments else None,
         "notes": refreshed.notes,
     }
+    result.update(collaboration_workflow_health(refreshed))
+    return result
 
 
 @app.patch("/api/collaborations/bulk")
@@ -1334,7 +1373,7 @@ def bulk_patch_collaborations(payload: CollaborationBulkPatch, db: Annotated[Ses
 def create_campaign(payload: CampaignBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)]):
     validate_campaign(payload)
     data = payload.model_dump()
-    if not data.get("next_action"):
+    if "next_action" not in payload.model_fields_set:
         data["next_action"] = NEXT_ACTION_BY_STATUS.get(data.get("execution_status"))
     item = Campaign(**data)
     db.add(item)
@@ -1757,6 +1796,7 @@ def workbench(
             "planned_amount": planned,
             "pending_payment": pending_payment,
             "content_url": item.deliverables[0].url if item.deliverables else None,
+            **collaboration_workflow_health(item),
         })
     return {
         "kpis": {

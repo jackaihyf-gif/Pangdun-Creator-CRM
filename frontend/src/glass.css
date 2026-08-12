@@ -262,6 +262,7 @@ nav button:active, .logout:active, .ui-button:active { transform: scale(.98); }
   animation: glass-fade-in .18s ease-out;
 }
 .drawer {
+  --drawer-radius: 22px;
   position: fixed;
   z-index: 101;
   top: 16px;
@@ -274,17 +275,21 @@ nav button:active, .logout:active, .ui-button:active { transform: scale(.98); }
   padding: 0;
   background: rgba(250, 253, 253, .9);
   border: 1px solid rgba(255, 255, 255, .92);
-  border-radius: 22px;
+  overflow: hidden;
+  border-radius: var(--drawer-radius);
+  background-clip: padding-box;
+  isolation: isolate;
+  contain: paint;
   box-shadow: -20px 24px 70px rgba(26, 48, 61, .24);
   backdrop-filter: blur(28px) saturate(150%);
   -webkit-backdrop-filter: blur(28px) saturate(150%);
   animation: glass-slide-in .22s cubic-bezier(.2, .8, .2, 1);
 }
-.drawer-header, .drawer-footer { background: rgba(255, 255, 255, .5); border-color: var(--line); }
-.drawer-header { padding: 18px 20px; }
+.drawer-header, .drawer-footer { background: rgba(255, 255, 255, .5); border-color: var(--line); background-clip: padding-box; }
+.drawer-header { padding: 18px 20px; border-radius: var(--drawer-radius) var(--drawer-radius) 0 0; }
 .drawer-header .ui-title { font-size: 21px; }
 .drawer-body { padding: 20px; }
-.drawer-footer { padding: 14px 20px; }
+.drawer-footer { padding: 14px 20px; border-radius: 0 0 var(--drawer-radius) var(--drawer-radius); }
 .icon-button {
   width: 34px;
   height: 34px;
