@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, text
@@ -9,11 +10,11 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "kol_crm.db"
 
-SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
+SQLALCHEMY_DATABASE_URL = os.getenv("PANGDUN_DATABASE_URL", f"sqlite:///{DB_PATH.as_posix()}")
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {},
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

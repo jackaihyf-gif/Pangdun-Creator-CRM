@@ -16,6 +16,30 @@
 
 其他同事需要连接同一个公司局域网，然后在浏览器打开这台主机显示的局域网地址。
 
+## 开发验证
+
+安装后端测试依赖：
+
+```powershell
+backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt
+```
+
+运行后端 API 集成测试：
+
+```powershell
+backend\.venv\Scripts\python.exe -m pytest backend\tests -q
+```
+
+运行前端交互测试与生产构建：
+
+```powershell
+cd frontend
+npm test
+npm run build
+```
+
+后端测试使用临时 SQLite 数据库，不会读取或改写 `backend/data/kol_crm.db`。
+
 ## 查看本机局域网 IP
 
 打开命令提示符，运行：
