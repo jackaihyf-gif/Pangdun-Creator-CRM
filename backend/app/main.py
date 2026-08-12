@@ -6,23 +6,25 @@ from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import and_, func, or_
+from sqlalchemy import String, and_, func, or_
 from sqlalchemy.orm import Session, joinedload
 
-from .auth import clear_session_cookie, current_user, hash_password, require_roles, set_session_cookie, verify_password
+from .auth import CLI_TOKEN_EXPIRE_DAYS, clear_session_cookie, create_cli_token, current_user, hash_password, require_roles, set_session_cookie, verify_password
 from .database import Base, apply_compat_migrations, engine, get_db
 from .execution_importer import confirm_execution_import, preview_execution_import
 from .importer import confirm_import, preview_import
-from .models import Activity, Campaign, Contact, CostItem, Deliverable, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
+from .models import Activity, AuditLog, Campaign, Contact, CostItem, Deliverable, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
+from .media_taxonomy import COOPERATION_STATUSES, MEDIA_CHANNELS, infer_audience_metric_type, metric_value_in_k, normalize_channel, normalize_cooperation_status, normalize_media_payload
+from .profile_links import clean_profile_links
 from .product_backfill import backfill_products, ensure_project_link, find_or_create_product
 from .schemas import (
     CampaignBase,
@@ -33,6 +35,7 @@ from .schemas import (
     DeliverableOut,
     LoginIn,
     MediaBase,
+    MediaReviewResolveIn,
     MediaOut,
     ProductBase,
     ProductMergeIn,
@@ -58,6 +61,8 @@ from .schemas import (
 
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = ROOT / "frontend" / "dist"
+if not (FRONTEND_DIST / "assets").exists():
+    FRONTEND_DIST = ROOT / "outputs" / "frontend-dist-v2"
 STAGES = {
     "Not Started",
     "To Contact",
@@ -125,6 +130,27 @@ def editable_user(user: Annotated[User, Depends(require_roles("Admin", "Editor")
     return user
 
 
+def add_audit_log(
+    db: Session,
+    user: User,
+    action: str,
+    entity_type: str,
+    entity_id: int | str | None,
+    before: Any = None,
+    after: Any = None,
+    reason: str | None = None,
+) -> None:
+    db.add(AuditLog(
+        user_id=user.id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id) if entity_id is not None else None,
+        before_json=json.dumps(jsonable_encoder(before), ensure_ascii=False) if before is not None else None,
+        after_json=json.dumps(jsonable_encoder(after), ensure_ascii=False) if after is not None else None,
+        reason=unquote((reason or "").strip()) or None,
+    ))
+
+
 def validate_campaign(payload: CampaignBase) -> None:
     if payload.stage not in STAGES:
         raise HTTPException(400, f"Invalid stage: {payload.stage}")
@@ -148,6 +174,19 @@ def login(payload: LoginIn, response: Response, db: Annotated[Session, Depends(g
     return user
 
 
+@app.post("/api/auth/cli-token")
+def cli_token(payload: LoginIn, db: Annotated[Session, Depends(get_db)]):
+    user = db.query(User).filter(func.lower(User.email) == payload.email.lower()).first()
+    if not user or not user.is_active or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(401, "Invalid email or password")
+    return {
+        "access_token": create_cli_token(user),
+        "token_type": "bearer",
+        "expires_in_days": CLI_TOKEN_EXPIRE_DAYS,
+        "user": UserOut.model_validate(user).model_dump(mode="json"),
+    }
+
+
 @app.post("/api/auth/logout")
 def logout(response: Response):
     clear_session_cookie(response)
@@ -168,6 +207,8 @@ def options(user: Annotated[User, Depends(current_user)]):
         "deliverable_types": sorted(DELIVERABLE_TYPES),
         "execution_statuses": sorted(EXECUTION_STATUSES),
         "payment_statuses": ["未付款", "部分付款", "已付款", "无需付款"],
+        "media_channels": MEDIA_CHANNELS,
+        "cooperation_statuses": COOPERATION_STATUSES,
     }
 
 
@@ -203,6 +244,26 @@ def update_user(item_id: int, payload: UserUpdate, db: Annotated[Session, Depend
     return item
 
 
+@app.get("/api/audit-logs")
+def list_audit_logs(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin", "Editor"))],
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    rows = db.query(AuditLog).options(joinedload(AuditLog.user)).order_by(AuditLog.created_at.desc()).limit(limit).all()
+    return {"items": [{
+        "id": row.id,
+        "user": row.user.name if row.user else None,
+        "action": row.action,
+        "entity_type": row.entity_type,
+        "entity_id": row.entity_id,
+        "before": json.loads(row.before_json) if row.before_json else None,
+        "after": json.loads(row.after_json) if row.after_json else None,
+        "reason": row.reason,
+        "created_at": row.created_at,
+    } for row in rows]}
+
+
 @app.get("/api/media", response_model=dict)
 def list_media(
     db: Annotated[Session, Depends(get_db)],
@@ -210,7 +271,8 @@ def list_media(
     q: str | None = None,
     country: str | None = None,
     platform_type: str | None = None,
-    media_tier: str | None = None,
+    min_volume: float | None = Query(default=None, ge=0),
+    max_volume: float | None = Query(default=None, ge=0),
     cooperation_status: str | None = None,
     page: int = 1,
     page_size: int = 20,
@@ -221,6 +283,7 @@ def list_media(
         query = query.filter(or_(
             Media.name.ilike(like),
             Media.website_url.ilike(like),
+            Media.profile_links.cast(String).ilike(like),
             Media.notes.ilike(like),
             Media.contacts.any(or_(Contact.name.ilike(like), Contact.email.ilike(like), Contact.phone.ilike(like))),
         ))
@@ -228,11 +291,173 @@ def list_media(
         query = query.filter(Media.country == country)
     if platform_type:
         query = query.filter(Media.platform_type == platform_type)
-    if media_tier:
-        query = query.filter(Media.media_tier == media_tier)
+    if min_volume is not None:
+        query = query.filter(Media.followers_or_traffic >= min_volume)
+    if max_volume is not None:
+        query = query.filter(Media.followers_or_traffic <= max_volume)
     if cooperation_status:
         query = query.filter(Media.cooperation_status == cooperation_status)
     return list_payload(query.order_by(Media.updated_at.desc()), page, page_size)
+
+
+def media_quality_report(db: Session) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    needs_review = 0
+    all_media = db.query(Media).order_by(Media.updated_at.desc()).all()
+    for item in all_media:
+        changes: list[str] = []
+        channel = "多平台" if len(item.profile_links or []) > 1 else normalize_channel(item.platform_type, item.website_url)
+        cooperation = normalize_cooperation_status(item.cooperation_status)
+        metric_type = infer_audience_metric_type(channel or item.platform_type)
+        metric_k = metric_value_in_k(item.followers_or_traffic, item.audience_metric_unit)
+        if channel and channel != item.platform_type:
+            changes.append(f"渠道：{item.platform_type or '空白'} → {channel}")
+        elif item.platform_type and not channel:
+            needs_review += 1
+        if cooperation and cooperation != item.cooperation_status:
+            changes.append(f"合作状态：{item.cooperation_status or '空白'} → {cooperation}")
+        elif item.cooperation_status and not cooperation:
+            needs_review += 1
+        if item.audience_metric_type != metric_type:
+            changes.append(f"指标：{item.audience_metric_type or '未标记'} → {metric_type}")
+        if item.media_tier is not None:
+            changes.append(f"停用等级：{item.media_tier} → 不再分级")
+        if item.followers_or_traffic is not None and item.audience_metric_unit != "K":
+            changes.append(f"粉丝/流量：{item.followers_or_traffic:g} → {metric_k:g} K")
+        elif item.audience_metric_unit != "K":
+            changes.append("单位：未标记 → K")
+        if changes:
+            items.append({"id": item.id, "name": item.name, "changes": changes})
+    return {"total": len(all_media), "safe_changes": len(items), "needs_review": needs_review, "items": items}
+
+
+@app.get("/api/media-data-quality")
+def media_data_quality(db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(current_user)]):
+    return media_quality_report(db)
+
+
+@app.post("/api/media-data-quality/normalize")
+def normalize_media_data(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(editable_user)],
+    change_reason: Annotated[str | None, Header(alias="X-Change-Reason")] = None,
+):
+    updated = 0
+    needs_review = 0
+    changed_ids: list[int] = []
+    for item in db.query(Media).all():
+        changed = False
+        channel = "多平台" if len(item.profile_links or []) > 1 else normalize_channel(item.platform_type, item.website_url)
+        cooperation = normalize_cooperation_status(item.cooperation_status)
+        metric_type = infer_audience_metric_type(channel or item.platform_type)
+        metric_k = metric_value_in_k(item.followers_or_traffic, item.audience_metric_unit)
+        if channel and channel != item.platform_type:
+            item.platform_type = channel
+            changed = True
+        elif item.platform_type and not channel:
+            needs_review += 1
+        if cooperation and cooperation != item.cooperation_status:
+            item.cooperation_status = cooperation
+            changed = True
+        elif item.cooperation_status and not cooperation:
+            needs_review += 1
+        if item.audience_metric_type != metric_type:
+            item.audience_metric_type = metric_type
+            changed = True
+        if item.media_tier is not None:
+            item.media_tier = None
+            changed = True
+        if item.audience_metric_unit != "K":
+            item.followers_or_traffic = metric_k
+            item.audience_metric_unit = "K"
+            changed = True
+        if changed:
+            updated += 1
+            changed_ids.append(item.id)
+    if changed_ids:
+        add_audit_log(db, user, "normalize", "media", "batch", after={"updated_ids": changed_ids, "updated_count": updated}, reason=change_reason)
+    db.commit()
+    return {"updated": updated, "needs_review": needs_review}
+
+
+@app.get("/api/media-review-queue")
+def media_review_queue(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(current_user)],
+):
+    items = db.query(Media).filter(Media.cooperation_status == "待核验").order_by(Media.updated_at.desc()).all()
+    rows = []
+    for item in items:
+        matches = re.findall(r"\[原合作状态\]\s*([^\n]+)", item.notes or "")
+        reason_matches = re.findall(r"\[数据核验\]\s*([^\n]+)", item.notes or "")
+        rows.append({
+            "id": item.id,
+            "name": item.name,
+            "country": item.country,
+            "platform_type": item.platform_type,
+            "website_url": item.website_url,
+            "raw_status": matches[-1].strip() if matches else None,
+            "review_reason": reason_matches[-1].strip() if reason_matches else None,
+            "notes": item.notes,
+        })
+    return {"items": rows, "total": len(rows)}
+
+
+@app.post("/api/media-review-queue/{media_id}/resolve")
+def resolve_media_review(
+    media_id: int,
+    payload: MediaReviewResolveIn,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(editable_user)],
+    change_reason: Annotated[str | None, Header(alias="X-Change-Reason")] = None,
+):
+    item = db.get(Media, media_id)
+    if not item:
+        raise HTTPException(404, "Media not found")
+    if payload.cooperation_status not in COOPERATION_STATUSES or payload.cooperation_status == "待核验":
+        raise HTTPException(400, "请选择待核验以外的标准合作状态")
+    product = db.get(Product, payload.product_id) if payload.product_id else None
+    if payload.product_id and not product:
+        raise HTTPException(404, "Product not found")
+    if not product and (payload.product_name or "").strip():
+        product = find_or_create_product(db, payload.product_name.strip(), "待核验中心确认")
+    project = db.get(Project, payload.project_id) if payload.project_id else None
+    if payload.project_id and not project:
+        raise HTTPException(404, "Project not found")
+    campaign = None
+    if payload.create_collaboration:
+        if not project:
+            raise HTTPException(400, "创建执行单时必须选择项目")
+        campaign = db.query(Campaign).filter(Campaign.project_id == project.id, Campaign.media_id == item.id, Campaign.archived_at.is_(None)).first()
+        if not campaign:
+            campaign = Campaign(
+                project_id=project.id,
+                media_id=item.id,
+                product_id=product.id if product else None,
+                collaboration_type=(payload.collaboration_type or "").strip() or None,
+                execution_status="待确认",
+                stage="Not Started",
+                notes="由待核验中心建立",
+            )
+            db.add(campaign)
+            db.flush()
+        else:
+            if product and not campaign.product_id:
+                campaign.product_id = product.id
+            if payload.collaboration_type and not campaign.collaboration_type:
+                campaign.collaboration_type = payload.collaboration_type.strip()
+        ensure_project_link(db, project.id, product.id) if product else None
+    before = {"cooperation_status": item.cooperation_status, "notes": item.notes}
+    item.cooperation_status = payload.cooperation_status
+    result_note = f"[核验结果] {datetime.now().strftime('%Y-%m-%d')} 状态={payload.cooperation_status}"
+    if product:
+        result_note += f"；产品={product.model}"
+    if project:
+        result_note += f"；项目={project.name}"
+    item.notes = "\n".join(part for part in [item.notes, result_note] if part)
+    add_audit_log(db, user, "resolve_review", "media", item.id, before=before, after={"cooperation_status": item.cooperation_status, "product_id": product.id if product else None, "project_id": project.id if project else None, "campaign_id": campaign.id if campaign else None}, reason=change_reason)
+    db.commit()
+    return {"ok": True, "media_id": item.id, "campaign_id": campaign.id if campaign else None, "remaining": db.query(Media).filter(Media.cooperation_status == "待核验").count()}
 
 
 @app.get("/api/media-duplicates")
@@ -252,9 +477,17 @@ def media_duplicates(
 
 
 @app.post("/api/media", response_model=MediaOut)
-def create_media(payload: MediaBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)]):
-    item = Media(**payload.model_dump())
+def create_media(payload: MediaBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)], change_reason: Annotated[str | None, Header(alias="X-Change-Reason")] = None):
+    normalized = normalize_media_payload(payload.model_dump())
+    normalized["profile_links"] = clean_profile_links(normalized.get("profile_links"), normalized.get("website_url"))
+    if len(normalized["profile_links"]) > 1:
+        normalized["platform_type"] = "多平台"
+    if normalized["profile_links"]:
+        normalized["website_url"] = normalized["profile_links"][0]["url"]
+    item = Media(**normalized)
     db.add(item)
+    db.flush()
+    add_audit_log(db, user, "create", "media", item.id, after=normalized, reason=change_reason)
     db.commit()
     db.refresh(item)
     return item
@@ -281,7 +514,10 @@ def media_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: An
             "category": item.category,
             "platform_type": item.platform_type,
             "website_url": item.website_url,
+            "profile_links": item.profile_links or clean_profile_links(None, item.website_url),
             "followers_or_traffic": item.followers_or_traffic,
+            "audience_metric_type": item.audience_metric_type,
+            "audience_metric_unit": item.audience_metric_unit,
             "media_tier": item.media_tier,
             "cooperation_status": item.cooperation_status,
             "notes": item.notes,
@@ -307,12 +543,19 @@ def media_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: An
 
 
 @app.put("/api/media/{item_id}", response_model=MediaOut)
-def update_media(item_id: int, payload: MediaBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)]):
+def update_media(item_id: int, payload: MediaBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)], change_reason: Annotated[str | None, Header(alias="X-Change-Reason")] = None):
     item = db.get(Media, item_id)
     if not item:
         raise HTTPException(404, "Media not found")
-    for key, value in payload.model_dump().items():
+    before = MediaOut.model_validate(item).model_dump(mode="json")
+    normalized = normalize_media_payload(payload.model_dump())
+    normalized["profile_links"] = clean_profile_links(normalized.get("profile_links"), normalized.get("website_url"))
+    if len(normalized["profile_links"]) > 1:
+        normalized["platform_type"] = "多平台"
+    normalized["website_url"] = normalized["profile_links"][0]["url"] if normalized["profile_links"] else None
+    for key, value in normalized.items():
         setattr(item, key, value)
+    add_audit_log(db, user, "update", "media", item.id, before=before, after=normalized, reason=change_reason)
     db.commit()
     db.refresh(item)
     return item
@@ -561,6 +804,93 @@ def validate_shipping_address_links(db: Session, media_id: int, contact_id: int 
         contact = db.get(Contact, contact_id)
         if not contact or contact.media_id != media_id:
             raise HTTPException(400, "Contact does not belong to the selected media")
+
+
+CONTACT_MERGE_FIELDS = ["name", "role", "email", "phone", "whatsapp", "telegram", "brief_email", "press_release_email", "notes"]
+
+
+def normalized_contact_value(value: str | None) -> str:
+    return re.sub(r"[^\w@]+", "", (value or "").strip().lower(), flags=re.UNICODE)
+
+
+def exact_contact_duplicate_groups(db: Session) -> list[list[Contact]]:
+    grouped: dict[tuple[int, str, str, str], list[Contact]] = {}
+    for contact in db.query(Contact).order_by(Contact.id).all():
+        key = (
+            contact.media_id,
+            normalized_contact_value(contact.name),
+            normalized_contact_value(contact.email),
+            normalized_contact_value(contact.phone),
+        )
+        if not any(key[1:]):
+            continue
+        grouped.setdefault(key, []).append(contact)
+    return [items for items in grouped.values() if len(items) > 1]
+
+
+def contact_duplicate_report(db: Session) -> dict[str, Any]:
+    groups = exact_contact_duplicate_groups(db)
+    duplicate_ids = [contact.id for group in groups for contact in group[1:]]
+    address_count = db.query(ShippingAddress).filter(ShippingAddress.contact_id.in_(duplicate_ids)).count() if duplicate_ids else 0
+    return {
+        "contact_total": db.query(Contact).count(),
+        "duplicate_groups": len(groups),
+        "duplicate_rows": len(duplicate_ids),
+        "linked_addresses": address_count,
+        "items": [{
+            "media_id": group[0].media_id,
+            "name": group[0].name,
+            "count": len(group),
+            "contact_ids": [contact.id for contact in group],
+        } for group in groups],
+    }
+
+
+@app.get("/api/contact-duplicates")
+def contact_duplicates(db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(current_user)]):
+    return contact_duplicate_report(db)
+
+
+@app.post("/api/contact-duplicates/merge")
+def merge_contact_duplicates(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(editable_user)],
+    change_reason: Annotated[str | None, Header(alias="X-Change-Reason")] = None,
+):
+    groups = exact_contact_duplicate_groups(db)
+    removed_ids: list[int] = []
+    kept_ids: list[int] = []
+    transferred_addresses = 0
+    for group in groups:
+        def score(contact: Contact) -> tuple[int, int, int]:
+            populated = sum(bool(getattr(contact, field, None)) for field in CONTACT_MERGE_FIELDS)
+            return (1 if contact.is_primary else 0, populated, -contact.id)
+
+        master = max(group, key=score)
+        duplicates = [contact for contact in group if contact.id != master.id]
+        kept_ids.append(master.id)
+        master.is_primary = any(contact.is_primary for contact in group)
+        merged_notes = []
+        for contact in group:
+            if contact.notes and contact.notes.strip() not in merged_notes:
+                merged_notes.append(contact.notes.strip())
+        for field in CONTACT_MERGE_FIELDS:
+            if field == "notes":
+                continue
+            if not getattr(master, field, None):
+                replacement = next((getattr(contact, field) for contact in group if getattr(contact, field, None)), None)
+                if replacement:
+                    setattr(master, field, replacement)
+        if merged_notes:
+            master.notes = "\n\n".join(merged_notes)
+        for duplicate in duplicates:
+            transferred_addresses += db.query(ShippingAddress).filter(ShippingAddress.contact_id == duplicate.id).update({ShippingAddress.contact_id: master.id}, synchronize_session=False)
+            removed_ids.append(duplicate.id)
+            db.delete(duplicate)
+    if removed_ids:
+        add_audit_log(db, user, "merge_duplicates", "contact", "batch", before={"removed_ids": removed_ids}, after={"kept_ids": kept_ids, "removed_count": len(removed_ids), "transferred_addresses": transferred_addresses}, reason=change_reason)
+    db.commit()
+    return {"merged_groups": len(groups), "removed": len(removed_ids), "remaining": db.query(Contact).count(), "transferred_addresses": transferred_addresses}
 
 
 def set_default_shipping_address(db: Session, item: ShippingAddress) -> None:
@@ -880,11 +1210,18 @@ def collaboration_detail(item_id: int, db: Annotated[Session, Depends(get_db)], 
 
 
 @app.patch("/api/collaborations/{item_id:int}")
-def patch_collaboration(item_id: int, payload: CollaborationPatch, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)]):
+def patch_collaboration(
+    item_id: int,
+    payload: CollaborationPatch,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(editable_user)],
+    change_reason: Annotated[str | None, Header(alias="X-Change-Reason")] = None,
+):
     item = db.query(Campaign).options(joinedload(Campaign.shipments)).filter(Campaign.id == item_id).first()
     if not item:
         raise HTTPException(404, "Collaboration not found")
     data = payload.model_dump(exclude_unset=True)
+    before = {key: jsonable_encoder(getattr(item, key, None)) for key in data}
     for key in ["project_id", "media_id", "owner_id", "collaboration_type", "expected_publish_date", "notes", "next_action", "follow_up_date", "follow_up_priority", "follow_up_done"]:
         if key in data:
             setattr(item, key, data[key])
@@ -906,6 +1243,7 @@ def patch_collaboration(item_id: int, payload: CollaborationPatch, db: Annotated
         shipment.tracking_number = data["tracking_number"]
         if "execution_status" in data:
             shipment.status = item.execution_status
+    add_audit_log(db, user, "update", "collaboration", item.id, before=before, after=data, reason=change_reason)
     db.commit()
     refreshed = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.media), joinedload(Campaign.owner), joinedload(Campaign.shipments)).filter(Campaign.id == item_id).first()
     return {
@@ -1315,6 +1653,7 @@ def workbench(
     execution_status: str | None = None,
     country: str | None = None,
     platform_type: str | None = None,
+    payment_pending: bool = False,
     queue: str = "today",
 ):
     query = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.media), joinedload(Campaign.owner), joinedload(Campaign.shipments), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items)).outerjoin(Project).filter(Campaign.is_historical.is_(False), or_(Campaign.project_id.is_(None), and_(Project.is_archived.is_(False), ~Project.name.like(f"{HISTORICAL_PROJECT_PREFIX}%"))))
@@ -1324,6 +1663,8 @@ def workbench(
         query = query.filter(Campaign.owner_id == owner_id)
     if execution_status:
         query = query.filter(Campaign.execution_status == execution_status)
+    if payment_pending:
+        query = query.filter(Campaign.cost_items.any(CostItem.payment_status.in_(["未付款", "部分付款"])))
     if country or platform_type:
         query = query.join(Media)
     if country:
@@ -1344,6 +1685,7 @@ def workbench(
     visible_campaigns = db.query(Campaign.id).outerjoin(Project).filter(Campaign.is_historical.is_(False), or_(Campaign.project_id.is_(None), and_(Project.is_archived.is_(False), ~Project.name.like(f"{HISTORICAL_PROJECT_PREFIX}%"))))
     overdue = visible_campaigns.filter(Campaign.expected_publish_date < today, Campaign.actual_publish_date.is_(None), Campaign.execution_status.notin_(["已发布", "已结算", "已暂停/取消"])).count()
     all_costs = db.query(CostItem).join(Campaign).outerjoin(Project).filter(Campaign.is_historical.is_(False), or_(Campaign.project_id.is_(None), and_(Project.is_archived.is_(False), ~Project.name.like(f"{HISTORICAL_PROJECT_PREFIX}%")))).all()
+    kpi_campaigns = db.query(Campaign).options(joinedload(Campaign.cost_items)).outerjoin(Project).filter(Campaign.is_historical.is_(False), or_(Campaign.project_id.is_(None), and_(Project.is_archived.is_(False), ~Project.name.like(f"{HISTORICAL_PROJECT_PREFIX}%")))).all()
     rows = []
     for item in items:
         actual = sum(cost.actual_amount or 0 for cost in item.cost_items)
@@ -1372,42 +1714,97 @@ def workbench(
     return {
         "kpis": {
             "project_total": db.query(func.count(Project.id)).scalar() or 0,
-            "collaboration_total": len(items),
-            "pending_shipping": sum(1 for item in items if item.execution_status == "待发货"),
-            "in_transit": sum(1 for item in items if item.execution_status == "运输中"),
-            "awaiting_content": sum(1 for item in items if item.execution_status == "已签收待产出"),
-            "published": sum(1 for item in items if item.execution_status == "已发布"),
+            "collaboration_total": len(kpi_campaigns),
+            "pending_shipping": sum(1 for item in kpi_campaigns if item.execution_status == "待发货"),
+            "in_transit": sum(1 for item in kpi_campaigns if item.execution_status == "运输中"),
+            "awaiting_content": sum(1 for item in kpi_campaigns if item.execution_status == "已签收待产出"),
+            "published": sum(1 for item in kpi_campaigns if item.execution_status == "已发布"),
             "overdue_content": overdue,
             "actual_amount": sum(cost.actual_amount or 0 for cost in all_costs),
-            "pending_payment": sum(1 for item in items if any(cost.payment_status in ["未付款", "部分付款"] for cost in item.cost_items)),
-            "overdue_tasks": db.query(func.count(Campaign.id)).filter(Campaign.follow_up_done.is_(False), Campaign.follow_up_date < today_date).scalar() or 0,
-            "today_tasks": db.query(func.count(Campaign.id)).filter(Campaign.follow_up_done.is_(False), Campaign.follow_up_date == today_date).scalar() or 0,
-            "upcoming_tasks": db.query(func.count(Campaign.id)).filter(Campaign.follow_up_done.is_(False), Campaign.follow_up_date > today_date, Campaign.follow_up_date <= today_date + timedelta(days=7)).scalar() or 0,
+            "pending_payment": sum(1 for item in kpi_campaigns if any(cost.payment_status in ["未付款", "部分付款"] for cost in item.cost_items)),
+            "overdue_tasks": sum(1 for item in kpi_campaigns if not item.follow_up_done and item.follow_up_date and item.follow_up_date < today_date),
+            "today_tasks": sum(1 for item in kpi_campaigns if not item.follow_up_done and item.follow_up_date == today_date),
+            "upcoming_tasks": sum(1 for item in kpi_campaigns if not item.follow_up_done and item.follow_up_date and today_date < item.follow_up_date <= today_date + timedelta(days=7)),
         },
         "items": rows,
     }
 
 
+@app.get("/api/import-batches")
+def list_import_batches(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin"))],
+    limit: int = Query(30, ge=1, le=100),
+):
+    rows = db.query(ImportBatch).order_by(ImportBatch.created_at.desc()).limit(limit).all()
+    return {"items": [{
+        "id": row.id, "import_type": row.import_type, "filename": row.filename,
+        "source_hash": row.source_hash, "status": row.status,
+        "summary": json.loads(row.summary_json) if row.summary_json else {},
+        "created_at": row.created_at, "undone_at": row.undone_at,
+        "user": row.user.name if row.user else None,
+    } for row in rows]}
+
+
+@app.post("/api/import-batches/{batch_id}/undo")
+def undo_import_batch(
+    batch_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin"))],
+    change_reason: Annotated[str | None, Header(alias="X-Change-Reason")] = None,
+):
+    batch = db.get(ImportBatch, batch_id)
+    if not batch:
+        raise HTTPException(404, "Import batch not found")
+    if batch.undone_at:
+        raise HTTPException(409, "该导入批次已撤销")
+    model_map = {
+        "media": Media, "contact": Contact, "campaign": Campaign, "shipment": Shipment,
+        "shipment_item": ShipmentItem, "cost_item": CostItem, "deliverable": Deliverable,
+        "project": Project, "product": Product, "project_product": ProjectProduct,
+    }
+    actions = json.loads(batch.undo_json or "[]")
+    removed = restored = 0
+    for action in reversed(actions):
+        model = model_map.get(action.get("entity"))
+        if not model:
+            continue
+        entity = db.get(model, action.get("id"))
+        if action.get("kind") == "create" and entity:
+            db.delete(entity)
+            db.flush()
+            removed += 1
+        elif action.get("kind") == "update" and entity:
+            for field, old_value in (action.get("before") or {}).items():
+                setattr(entity, field, old_value)
+            restored += 1
+    batch.status = "undone"
+    batch.undone_at = datetime.utcnow()
+    add_audit_log(db, user, "undo", "import_batch", batch.id, after={"removed": removed, "restored": restored}, reason=change_reason)
+    db.commit()
+    return {"ok": True, "removed": removed, "restored": restored}
+
+
 @app.post("/api/import/preview")
-async def import_preview(user: Annotated[User, Depends(require_roles("Admin"))], file: UploadFile = File(...)):
-    result = preview_import(await file.read())
+async def import_preview(db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(require_roles("Admin"))], file: UploadFile = File(...)):
+    result = preview_import(await file.read(), db)
     return result.__dict__
 
 
 @app.post("/api/import/confirm")
 async def import_confirm(db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(require_roles("Admin"))], file: UploadFile = File(...)):
-    result = confirm_import(db, await file.read())
+    result = confirm_import(db, await file.read(), file.filename, user.id)
     return result.__dict__
 
 
 @app.post("/api/execution-import/preview")
-async def execution_import_preview(user: Annotated[User, Depends(require_roles("Admin"))], file: UploadFile = File(...)):
-    return preview_execution_import(await file.read())
+async def execution_import_preview(db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(require_roles("Admin"))], file: UploadFile = File(...)):
+    return preview_execution_import(await file.read(), db)
 
 
 @app.post("/api/execution-import/confirm")
 async def execution_import_confirm(db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(require_roles("Admin"))], file: UploadFile = File(...)):
-    return confirm_execution_import(db, await file.read())
+    return confirm_execution_import(db, await file.read(), file.filename, user.id)
 
 
 if FRONTEND_DIST.exists():

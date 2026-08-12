@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from fastapi import Cookie, Depends, HTTPException, Response, status
+from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
@@ -13,6 +13,7 @@ from .models import User
 SECRET_KEY = "change-this-local-mvp-secret"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 12
+CLI_TOKEN_EXPIRE_DAYS = 90
 COOKIE_NAME = "kol_crm_session"
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -29,6 +30,12 @@ def hash_password(password: str) -> str:
 def create_access_token(user: User) -> str:
     expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     payload = {"sub": str(user.id), "role": user.role, "exp": expire}
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_cli_token(user: User) -> str:
+    expire = datetime.utcnow() + timedelta(days=CLI_TOKEN_EXPIRE_DAYS)
+    payload = {"sub": str(user.id), "role": user.role, "kind": "cli", "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -50,7 +57,13 @@ def clear_session_cookie(response: Response) -> None:
 def current_user(
     db: Annotated[Session, Depends(get_db)],
     token: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> User:
+    if authorization:
+        scheme, _, bearer_token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not bearer_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization header")
+        token = bearer_token
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     try:

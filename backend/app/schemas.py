@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ORMModel(BaseModel):
@@ -36,6 +36,12 @@ class UserOut(ORMModel):
     created_at: datetime
 
 
+class ProfileLink(BaseModel):
+    platform: str
+    url: str
+    followers_k: float | None = None
+
+
 class MediaBase(BaseModel):
     name: str
     country: str | None = None
@@ -43,7 +49,10 @@ class MediaBase(BaseModel):
     category: str | None = None
     platform_type: str | None = None
     website_url: str | None = None
-    followers_or_traffic: int | None = None
+    profile_links: list[ProfileLink] = Field(default_factory=list)
+    followers_or_traffic: float | None = None
+    audience_metric_type: str | None = None
+    audience_metric_unit: str | None = None
     media_tier: str | None = None
     cooperation_status: str | None = None
     notes: str | None = None
@@ -209,6 +218,15 @@ class CollaborationBulkPatch(BaseModel):
     execution_status: str | None = None
     follow_up_date: date | None = None
     follow_up_priority: str | None = None
+
+
+class MediaReviewResolveIn(BaseModel):
+    cooperation_status: str
+    product_id: int | None = None
+    product_name: str | None = None
+    project_id: int | None = None
+    collaboration_type: str | None = None
+    create_collaboration: bool = False
 
 
 class ShipmentBase(BaseModel):

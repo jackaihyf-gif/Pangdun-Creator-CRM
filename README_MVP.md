@@ -86,6 +86,47 @@ ipconfig
 - `Editor`：新增和编辑媒体、产品、合作、产出、联系人。
 - `Viewer`：只能查看。
 
+## CLI 与 Agent 接入
+
+网页端会继续保留；仓库根目录新增了 `pangdun.cmd`，用于从终端或 Agent 安全访问同一套 CRM API。
+
+首次登录：
+
+```bat
+pangdun.cmd auth login --email admin@example.local
+```
+
+密码通过隐藏输入读取，CLI 只在当前 Windows 用户的本地配置目录保存有效期 90 天的 Token，不保存密码。也可以通过 `PANGDUN_TOKEN` 环境变量提供 Token。
+
+常用只读命令：
+
+```bat
+pangdun.cmd auth status
+pangdun.cmd media list --channel YouTube
+pangdun.cmd media show 172
+pangdun.cmd media normalize
+pangdun.cmd tasks today
+pangdun.cmd collab list
+pangdun.cmd audit --limit 20
+```
+
+媒体和执行单更新默认只输出变更预览。真正写入时必须同时传入 `--apply` 与修改原因：
+
+```bat
+pangdun.cmd media update 172 --tier B
+pangdun.cmd media update 172 --tier B --apply --reason "人工核对粉丝量后调整等级"
+pangdun.cmd collab update 36 --status 运输中 --apply --reason "物流单已确认揽收"
+pangdun.cmd media normalize --apply --reason "统一历史渠道、等级和明确的状态同义词"
+```
+
+在全局参数中加入 `--json` 可获得适合 Agent 读取的结构化输出，例如：
+
+```bat
+pangdun.cmd --json tasks overdue
+```
+
+CLI 写入媒体、数据归一和合作执行单时会记录操作者、修改前后内容及原因，可通过 `pangdun.cmd audit` 查看。
+
 ## 备份数据库
 
 双击 `backup.bat`。备份文件会保存在 `backups` 目录，文件名带日期和时间。
@@ -117,4 +158,4 @@ restore.bat backups\kol_crm_backup_2026-07-07_153000.db
 - SQLite 适合小团队低频编辑，不适合大量并发写入。
 - 请定期运行 `backup.bat` 备份数据库。
 - 长期正式使用时，建议迁移到专门内网主机 + PostgreSQL。
-- 前端使用 `animal-island-ui` 做内部自用界面，该组件库标注 CC BY-NC 4.0，禁止商业分发或商用产品使用。
+- 前端使用项目内自有组件与 Radix 基础交互组件，不依赖此前的非商用 UI 组件库。

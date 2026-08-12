@@ -5,13 +5,19 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-popover": "^1.1.23",
+    "@radix-ui/react-select": "^2.3.7",
+    "@radix-ui/react-slot": "^1.3.3",
     "@vitejs/plugin-react": "^4.3.4",
-    "animal-island-ui": "^1.2.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.7",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
-  },
-  "devDependencies": {}
+    "react-dom": "^19.0.0",
+    "sonner": "^2.0.8",
+    "tailwind-merge": "^3.6.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
 }

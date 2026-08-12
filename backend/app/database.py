@@ -35,6 +35,14 @@ def apply_compat_migrations() -> None:
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
     with engine.begin() as connection:
+        if "media" in tables:
+            columns = {column["name"] for column in inspector.get_columns("media")}
+            if "audience_metric_type" not in columns:
+                connection.execute(text("ALTER TABLE media ADD COLUMN audience_metric_type VARCHAR(40)"))
+            if "audience_metric_unit" not in columns:
+                connection.execute(text("ALTER TABLE media ADD COLUMN audience_metric_unit VARCHAR(20)"))
+            if "profile_links" not in columns:
+                connection.execute(text("ALTER TABLE media ADD COLUMN profile_links JSON DEFAULT '[]'"))
         if "campaigns" in tables:
             columns = {column["name"] for column in inspector.get_columns("campaigns")}
             additions = {

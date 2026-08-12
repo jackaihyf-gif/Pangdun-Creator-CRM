@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -24,6 +24,39 @@ class User(Base):
     campaigns = relationship("Campaign", back_populates="owner")
 
 
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(80), index=True)
+    entity_type: Mapped[str] = mapped_column(String(80), index=True)
+    entity_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    before_json: Mapped[str | None] = mapped_column(Text)
+    after_json: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+
+    user = relationship("User")
+
+
+class ImportBatch(Base):
+    __tablename__ = "import_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    import_type: Mapped[str] = mapped_column(String(40), index=True)
+    filename: Mapped[str | None] = mapped_column(String(255))
+    source_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="completed", index=True)
+    summary_json: Mapped[str | None] = mapped_column(Text)
+    undo_json: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
 class Media(Base):
     __tablename__ = "media"
 
@@ -34,7 +67,10 @@ class Media(Base):
     category: Mapped[str | None] = mapped_column(String(120), index=True)
     platform_type: Mapped[str | None] = mapped_column(String(120), index=True)
     website_url: Mapped[str | None] = mapped_column(Text)
-    followers_or_traffic: Mapped[int | None] = mapped_column(Integer)
+    profile_links: Mapped[list] = mapped_column(JSON, default=list)
+    followers_or_traffic: Mapped[float | None] = mapped_column(Float)
+    audience_metric_type: Mapped[str | None] = mapped_column(String(40))
+    audience_metric_unit: Mapped[str | None] = mapped_column(String(20))
     media_tier: Mapped[str | None] = mapped_column(String(80))
     cooperation_status: Mapped[str | None] = mapped_column(String(120), index=True)
     notes: Mapped[str | None] = mapped_column(Text)
