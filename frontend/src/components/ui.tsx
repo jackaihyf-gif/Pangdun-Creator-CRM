@@ -176,6 +176,7 @@ export function Dialog({
   footerStart,
   variant = 'drawer',
   okType = 'primary',
+  contentClassName,
 }: {
   title: string;
   children: React.ReactNode;
@@ -186,12 +187,13 @@ export function Dialog({
   footerStart?: React.ReactNode;
   variant?: 'drawer' | 'modal';
   okType?: 'primary' | 'danger';
+  contentClassName?: string;
 }) {
   return (
     <DialogPrimitive.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="drawer-layer" />
-        <DialogPrimitive.Content className={cn('drawer', variant === 'modal' && 'dialog-modal')} aria-describedby={undefined}>
+        <DialogPrimitive.Content className={cn('drawer', variant === 'modal' && 'dialog-modal', contentClassName)} aria-describedby={undefined}>
           <header className="drawer-header">
             <DialogPrimitive.Title asChild><Title>{title}</Title></DialogPrimitive.Title>
             <DialogPrimitive.Close asChild>
