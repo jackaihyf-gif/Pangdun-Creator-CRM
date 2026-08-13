@@ -1376,17 +1376,31 @@ pre {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 34px;
-  padding: 6px 9px;
+  min-height: 36px;
+  padding: 7px 9px 9px;
   border: 0;
-  border-radius: 9px;
+  border-radius: 0;
   color: #6f7774;
   background: transparent;
   font-size: 11px;
   font-weight: 620;
   cursor: pointer;
   white-space: nowrap;
-  transition: color .18s ease, background .18s ease, box-shadow .18s ease, transform .18s ease;
+  transition: color .18s ease;
+}
+
+.execution-status-bar button::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  bottom: 1px;
+  left: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: #159989;
+  opacity: 0;
+  transform: scaleX(.45);
+  transition: opacity .18s ease, transform .18s ease;
 }
 
 .execution-status-bar .status-all {
@@ -1397,14 +1411,24 @@ pre {
 
 .execution-status-bar button:hover {
   color: #167f73;
-  background: rgba(237, 248, 245, .62);
+  background: transparent;
 }
 
 .execution-status-bar button.active {
   color: #087f73;
-  background: rgba(231, 247, 243, .94);
-  box-shadow: 0 4px 12px rgba(26, 132, 117, .11), inset 0 0 0 1px rgba(62, 169, 154, .15);
-  transform: translateY(-1px);
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+.execution-status-bar button.active::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.execution-status-bar button:focus-visible {
+  outline: 2px solid rgba(21, 153, 137, .28);
+  outline-offset: -2px;
 }
 
 .execution-status-bar button > b {
