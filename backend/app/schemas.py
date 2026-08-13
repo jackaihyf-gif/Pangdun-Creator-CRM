@@ -277,6 +277,22 @@ class MediaReviewBatchIn(BaseModel):
     snooze_days: int = Field(default=30, ge=1, le=365)
 
 
+class AgentExtractIn(BaseModel):
+    input_type: str = "text"
+    content: str
+    source_label: str | None = None
+
+
+class AgentApplyIn(BaseModel):
+    selected_fields: list[str] = Field(default_factory=list)
+    target_media_id: int | None = None
+    create_media: bool = False
+
+
+class AgentRejectIn(BaseModel):
+    reason: str | None = None
+
+
 class ShipmentBase(BaseModel):
     campaign_id: int
     shipping_address_id: int | None = None

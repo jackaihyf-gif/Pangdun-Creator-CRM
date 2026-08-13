@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, unquote
 
+import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,11 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import String, and_, func, or_
 from sqlalchemy.orm import Session, joinedload
 
+from .agent_service import AgentConfigurationError, AgentSourceError, agent_config, deepseek_json_extract, fetch_public_source, source_hash
 from .auth import CLI_TOKEN_EXPIRE_DAYS, clear_session_cookie, create_cli_token, current_user, hash_password, require_roles, set_session_cookie, verify_password
 from .database import Base, apply_compat_migrations, engine, get_db
 from .execution_importer import confirm_execution_import, preview_execution_import
 from .importer import confirm_import, preview_import
-from .models import Activity, AuditLog, Campaign, CampaignStageEvent, Contact, CostItem, Deliverable, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
+from .models import Activity, AgentRun, AuditLog, Campaign, CampaignStageEvent, Contact, CostItem, Deliverable, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
 from .media_taxonomy import COOPERATION_STATUSES, COUNTRIES, MEDIA_CHANNELS, VERIFICATION_STATUSES, infer_audience_metric_type, metric_value_in_k, normalize_channel, normalize_cooperation_status, normalize_country, normalize_media_payload
 from .profile_links import clean_profile_links, profile_identity
 from .product_backfill import backfill_products, ensure_project_link, find_or_create_product, find_product_matches, product_aliases, product_identity
@@ -38,6 +40,9 @@ from .schemas import (
     MediaBase,
     MediaReviewResolveIn,
     MediaReviewBatchIn,
+    AgentExtractIn,
+    AgentApplyIn,
+    AgentRejectIn,
     MediaMergeIn,
     MediaOut,
     ProductBase,
@@ -423,6 +428,232 @@ def restore_audit_log(
     db.commit()
     db.refresh(item)
     return MediaOut.model_validate(item)
+
+
+def agent_run_payload(row: AgentRun) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "task_type": row.task_type,
+        "input_type": row.input_type,
+        "source_label": row.source_label,
+        "status": row.status,
+        "model": row.model,
+        "proposal": json.loads(row.proposal_json) if row.proposal_json else None,
+        "usage": json.loads(row.usage_json) if row.usage_json else None,
+        "error_message": row.error_message,
+        "target_media_id": row.target_media_id,
+        "user": row.user.name if row.user else None,
+        "reviewed_by": row.reviewed_by.name if row.reviewed_by else None,
+        "created_at": row.created_at,
+        "reviewed_at": row.reviewed_at,
+    }
+
+
+@app.get("/api/agent/status")
+def agent_status(user: Annotated[User, Depends(current_user)]):
+    return agent_config()
+
+
+@app.get("/api/agent/runs")
+def list_agent_runs(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(current_user)],
+    status: str | None = None,
+    limit: int = Query(default=30, ge=1, le=100),
+):
+    query = db.query(AgentRun).options(joinedload(AgentRun.user), joinedload(AgentRun.reviewed_by))
+    if status:
+        query = query.filter(AgentRun.status == status)
+    rows = query.order_by(AgentRun.created_at.desc()).limit(limit).all()
+    return {"items": [agent_run_payload(row) for row in rows], "total": query.count()}
+
+
+@app.post("/api/agent/extract")
+def extract_with_agent(
+    payload: AgentExtractIn,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin", "Editor"))],
+):
+    if payload.input_type not in {"text", "url"}:
+        raise HTTPException(400, "Agent 首版仅支持网页 URL 或粘贴文本")
+    raw = payload.content.strip()
+    if len(raw) < 10:
+        raise HTTPException(400, "请提供足够的网页、Media Kit、邮件或表格文字")
+    source_label = (payload.source_label or (raw if payload.input_type == "url" else "粘贴文本")).strip()
+    try:
+        if payload.input_type == "url":
+            content, final_url = fetch_public_source(raw)
+            source_label = payload.source_label or final_url
+        else:
+            content = raw[:45_000]
+    except (AgentSourceError, httpx.HTTPError) as exc:
+        raise HTTPException(400, f"读取来源失败：{exc}") from exc
+    run = AgentRun(
+        input_type=payload.input_type,
+        source_label=source_label[:500],
+        source_hash=source_hash(content),
+        status="processing",
+        model=agent_config()["model"],
+        user_id=user.id,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    try:
+        proposal, usage = deepseek_json_extract(content, source_label)
+        proposed_media = proposal.get("media") or {}
+        links = proposed_media.get("profile_links") or []
+        matches = media_identity_matches(db, links)
+        if not matches and proposed_media.get("name"):
+            normalized_name = proposed_media["name"].strip().casefold()
+            name_rows = db.query(Media).filter(func.lower(Media.name) == normalized_name).limit(10).all()
+            matches = [{"id": item.id, "name": item.name, "reason": "媒体名称相同"} for item in name_rows]
+        proposal["match_candidates"] = matches
+        proposal["suggested_target_media_id"] = matches[0]["id"] if len(matches) == 1 else None
+        run.target_media_id = proposal["suggested_target_media_id"]
+        run.proposal_json = json.dumps(jsonable_encoder(proposal), ensure_ascii=False)
+        run.usage_json = json.dumps(usage, ensure_ascii=False)
+        run.status = "proposed"
+        db.commit()
+        db.refresh(run)
+        return agent_run_payload(run)
+    except AgentConfigurationError as exc:
+        run.status = "failed"
+        run.error_message = str(exc)
+        db.commit()
+        raise HTTPException(503, str(exc)) from exc
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        run.status = "failed"
+        run.error_message = str(exc)[:1000]
+        db.commit()
+        raise HTTPException(502, f"Agent 提取失败：{exc}") from exc
+
+
+AGENT_MEDIA_FIELDS = {
+    "name", "country", "platform_type", "category", "profile_links",
+    "followers_or_traffic", "audience_metric_type", "cooperation_status", "notes",
+}
+AGENT_CONTACT_FIELDS = {"name", "role", "email", "phone", "whatsapp", "telegram"}
+
+
+@app.post("/api/agent/runs/{run_id}/apply")
+def apply_agent_run(
+    run_id: int,
+    payload: AgentApplyIn,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin", "Editor"))],
+):
+    run = db.get(AgentRun, run_id)
+    if not run or run.status != "proposed" or not run.proposal_json:
+        raise HTTPException(400, "该 Agent 建议不存在或已经处理")
+    proposal = json.loads(run.proposal_json)
+    selected = set(payload.selected_fields)
+    if not selected:
+        raise HTTPException(400, "请至少选择一个要写入的字段")
+    proposed_media = proposal.get("media") or {}
+    valid_selected = {
+        f"media.{field}" for field in AGENT_MEDIA_FIELDS
+        if proposed_media.get(field) not in (None, "", [])
+    }
+    for index, proposed_contact in enumerate(proposal.get("contacts") or []):
+        valid_selected.update(
+            f"contacts.{index}.{field}" for field in AGENT_CONTACT_FIELDS
+            if proposed_contact.get(field) not in (None, "")
+        )
+    if not selected.issubset(valid_selected):
+        raise HTTPException(400, "选择中包含 Agent 未建议或不允许写入的字段")
+    target_id = payload.target_media_id or run.target_media_id
+    item = db.get(Media, target_id) if target_id else None
+    if target_id and not item:
+        raise HTTPException(404, "Target media not found")
+    if not item and not payload.create_media:
+        raise HTTPException(400, "请选择现有媒体，或确认创建新媒体")
+    media_changes = {
+        field: proposed_media.get(field)
+        for field in AGENT_MEDIA_FIELDS
+        if f"media.{field}" in selected and proposed_media.get(field) not in (None, "", [])
+    }
+    confidence = proposal.get("confidence") or {}
+    selected_scores = [float(confidence[key]) for key in selected if key in confidence]
+    overall_confidence = round(sum(selected_scores) / len(selected_scores), 3) if selected_scores else 0.49
+    source_label = run.source_label or "Agent 提取"
+    try:
+        if item:
+            before = MediaOut.model_validate(item).model_dump(mode="json")
+            merged = {**before, **media_changes}
+        else:
+            if not media_changes.get("name"):
+                raise HTTPException(400, "新建媒体必须选择名称字段")
+            before = None
+            merged = media_changes
+        merged.update({
+            "data_source": source_label,
+            "data_capture_method": "agent",
+            "data_confidence": overall_confidence,
+            "last_verified_at": date.today() if overall_confidence >= 0.8 else None,
+            "verification_status": "部分核验" if overall_confidence >= 0.8 else "待核验",
+        })
+        normalized = normalize_media_payload(MediaBase.model_validate(merged).model_dump())
+        normalized["profile_links"] = clean_profile_links(normalized.get("profile_links"), normalized.get("website_url"))
+        require_unique_media_identity(db, normalized["profile_links"], item.id if item else None)
+        normalized["website_url"] = normalized["profile_links"][0]["url"] if normalized["profile_links"] else None
+        if item:
+            for key, value in normalized.items():
+                setattr(item, key, value)
+        else:
+            item = Media(**normalized)
+            db.add(item)
+            db.flush()
+        created_contacts = 0
+        for index, proposed_contact in enumerate(proposal.get("contacts") or []):
+            contact_data = {
+                field: proposed_contact.get(field)
+                for field in AGENT_CONTACT_FIELDS
+                if f"contacts.{index}.{field}" in selected and proposed_contact.get(field) not in (None, "")
+            }
+            if not contact_data:
+                continue
+            contact_data.update({
+                "media_id": item.id,
+                "data_source": source_label,
+                "data_capture_method": "agent",
+                "data_confidence": overall_confidence,
+                "verified_at": date.today() if overall_confidence >= 0.8 else None,
+            })
+            contact_data = normalize_contact_data(contact_data)
+            require_unique_contact(db, contact_data)
+            db.add(Contact(**contact_data))
+            created_contacts += 1
+        after = MediaOut.model_validate(item).model_dump(mode="json")
+        add_audit_log(db, user, "agent_apply", "media", item.id, before=before, after={"selected_fields": sorted(selected), "media": after, "contacts_created": created_contacts, "agent_run_id": run.id}, reason=f"人工确认 Agent 建议；来源={source_label}")
+        run.status = "applied"
+        run.target_media_id = item.id
+        run.reviewed_by_id = user.id
+        run.reviewed_at = datetime.utcnow()
+        db.commit()
+        db.refresh(item)
+        return {"ok": True, "media": MediaOut.model_validate(item), "contacts_created": created_contacts, "run": agent_run_payload(run)}
+    except Exception:
+        db.rollback()
+        raise
+
+
+@app.post("/api/agent/runs/{run_id}/reject")
+def reject_agent_run(
+    run_id: int,
+    payload: AgentRejectIn,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin", "Editor"))],
+):
+    run = db.get(AgentRun, run_id)
+    if not run or run.status != "proposed":
+        raise HTTPException(400, "该 Agent 建议不存在或已经处理")
+    run.status = "rejected"
+    run.reviewed_by_id = user.id
+    run.reviewed_at = datetime.utcnow()
+    add_audit_log(db, user, "agent_reject", "agent_run", run.id, after={"reason": payload.reason}, reason=payload.reason or "人工拒绝 Agent 建议")
+    db.commit()
+    return {"ok": True, "run": agent_run_payload(run)}
 
 
 @app.get("/api/media", response_model=dict)

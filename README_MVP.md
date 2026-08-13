@@ -151,6 +151,31 @@ pangdun.cmd --json tasks overdue
 
 CLI 写入媒体、数据归一和合作执行单时会记录操作者、修改前后内容及原因，可通过 `pangdun.cmd audit` 查看。
 
+## 配置胖墩 Agent（DeepSeek）
+
+Agent 第一版使用 DeepSeek 的 OpenAI 兼容 Chat Completions 接口，默认模型是 `deepseek-v4-flash`。密钥只由后端读取，不会进入网页、数据库或 Git。
+
+1. 将 `backend\agent.env.example` 复制为 `backend\data\agent.env`。
+2. 在新文件中填写 `DEEPSEEK_API_KEY`。
+3. 重新运行 `start.bat`。
+4. 进入左侧“胖墩 Agent”，顶部显示“已连接”后即可使用。
+
+首版支持：
+
+- 读取公开网页文字，或粘贴 Media Kit、邮件和表格文字。
+- 提取媒体名称、国家、渠道、主页、粉丝/流量和联系人。
+- 为每个字段展示原文证据和置信度。
+- 匹配已有媒体，并由人工勾选字段后写入。
+- 保留采用、拒绝、失败、Token 用量和审计记录。
+
+安全边界：
+
+- Agent 不允许访问本机、局域网或保留地址。
+- 不会静默修改或删除 CRM 数据。
+- 不会自动发送邮件。
+- 低置信度或缺少证据的结果不会自动预选。
+- PDF Media Kit 暂不直接上传，请先复制其中的文字；文件解析会在后续版本补充。
+
 ## 备份数据库
 
 双击 `backup.bat`。备份文件会保存在 `backups` 目录，文件名带日期和时间。

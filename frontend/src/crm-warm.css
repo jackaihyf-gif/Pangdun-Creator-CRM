@@ -847,6 +847,54 @@ body {
 .warning-text { color: #a36c25; }
 .visually-hidden { display: none !important; }
 
+/* Agent workspace: calm review surface, never a chat gimmick. */
+.agent-provider { display: grid; justify-items: end; gap: 2px; color: #9a7d4b; font-size: 10px; }
+.agent-provider strong { color: #53605c; font-size: 12px; }
+.agent-provider.ready span { color: #138879; }
+.agent-setup { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; padding: 14px 17px; border: 1px solid #ecdcb9; border-radius: 13px; background: #fffaf0; color: #9a7538; }
+.agent-setup > div { display: grid; gap: 4px; }
+.agent-setup strong { color: #51483b; font-size: 12px; }
+.agent-setup span { color: #7f7669; font-size: 10px; line-height: 1.55; }
+.agent-setup code { padding: 2px 5px; border-radius: 5px; background: #f4ead5; color: #6c542d; }
+.agent-layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(230px, .55fr); gap: 12px; }
+.agent-composer, .agent-guardrails { border: 1px solid #e7e0d6; border-radius: 15px; background: rgba(255,253,249,.9); box-shadow: 0 9px 28px rgba(65,52,37,.045); }
+.agent-composer { display: grid; gap: 13px; padding: 18px; }
+.agent-composer > header, .agent-composer > footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.agent-composer > header > div { display: flex; align-items: center; gap: 8px; color: #168c7f; }
+.agent-composer > header strong { color: #33413d; font-size: 13px; }
+.agent-composer > header span, .agent-composer > footer span { color: #909894; font-size: 10px; }
+.agent-composer label { display: grid; gap: 6px; color: #53605c; font-size: 11px; font-weight: 650; }
+.agent-composer textarea { min-height: 145px; padding: 12px; border: 1px solid #ded7ce; border-radius: 10px; outline: 0; resize: vertical; color: #33403c; font: inherit; font-size: 11px; line-height: 1.55; }
+.agent-composer textarea:focus { border-color: #75bdb2; box-shadow: 0 0 0 3px rgba(35,159,143,.1); }
+.agent-source-tabs { display: flex; gap: 20px; border-bottom: 1px solid #ebe4da; }
+.agent-source-tabs button { display: flex; align-items: center; gap: 6px; padding: 0 1px 9px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #7b8581; font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; }
+.agent-source-tabs button.active { border-bottom-color: #20a795; color: #087f73; }
+.agent-guardrails { display: grid; align-content: start; gap: 10px; padding: 18px; }
+.agent-guardrails img { width: 62px; height: 62px; object-fit: contain; }
+.agent-guardrails strong { margin-top: 2px; color: #33413d; font-size: 11px; }
+.agent-guardrails ul { display: grid; gap: 6px; margin: 0; padding-left: 16px; color: #77817e; font-size: 10px; line-height: 1.4; }
+.agent-review { display: grid; gap: 13px; }
+.agent-review > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 13px; border: 1px solid #dceae6; border-radius: 12px; background: #f5faf8; }
+.agent-review > header > div { display: flex; align-items: flex-start; gap: 10px; color: #188f81; }
+.agent-review > header > div > div { display: grid; gap: 3px; }
+.agent-review > header strong { color: #34423e; font-size: 12px; }
+.agent-review > header span { color: #84908b; font-size: 10px; }
+.agent-warnings { display: grid; gap: 5px; padding: 10px 12px; border-left: 3px solid #d6a64d; background: #fffaf1; color: #836933; font-size: 10px; }
+.agent-target { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px; border: 1px solid #e5ded3; border-radius: 12px; }
+.agent-target label { display: flex; align-items: center; gap: 6px; color: #52605c; font-size: 10px; font-weight: 650; white-space: nowrap; }
+.agent-target input, .agent-field-list input { accent-color: #159888; }
+.agent-field-list { display: grid; border: 1px solid #e6dfd5; border-radius: 12px; overflow: hidden; }
+.agent-field-list > label { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding: 11px 13px; background: rgba(255,255,255,.65); cursor: pointer; }
+.agent-field-list > label + label { border-top: 1px solid #eee7de; }
+.agent-field-list > label.low-confidence { background: #fffaf4; }
+.agent-field-list > label > div { display: grid; gap: 4px; min-width: 0; }
+.agent-field-list header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.agent-field-list strong { color: #35433f; font-size: 11px; }
+.agent-field-list header span { padding: 2px 6px; border-radius: 8px; background: #e7f4f1; color: #158779; font-size: 9px; font-weight: 700; }
+.agent-field-list .low-confidence header span { background: #f8e9ce; color: #9b712c; }
+.agent-field-list p { margin: 0; overflow: hidden; color: #4f5d59; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-field-list small { color: #939b97; font-size: 9px; line-height: 1.45; }
+
 /* Button system
    compact 30px: tables and dense inline actions
    default 36px: forms, toolbars and dialog footers

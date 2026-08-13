@@ -253,6 +253,30 @@ class CampaignStageEvent(Base):
     user = relationship("User")
 
 
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    task_type: Mapped[str] = mapped_column(String(40), default="media_extract", index=True)
+    input_type: Mapped[str] = mapped_column(String(30))
+    source_label: Mapped[str | None] = mapped_column(String(500))
+    source_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    model: Mapped[str | None] = mapped_column(String(120))
+    proposal_json: Mapped[str | None] = mapped_column(Text)
+    usage_json: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    target_media_id: Mapped[int | None] = mapped_column(ForeignKey("media.id"), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    reviewed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+    reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])
+    target_media = relationship("Media")
+
+
 class Shipment(Base):
     __tablename__ = "shipments"
 

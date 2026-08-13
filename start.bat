@@ -20,6 +20,10 @@ if not exist imports mkdir imports
 if not exist uploads mkdir uploads
 if not exist backups mkdir backups
 
+if exist backend\data\agent.env (
+  for /f "usebackq tokens=1,* delims==" %%A in ("backend\data\agent.env") do set "%%A=%%B"
+)
+
 if not exist backend\.venv (
   echo Creating Python virtual environment...
   %PYTHON_CMD% -m venv backend\.venv
