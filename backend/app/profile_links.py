@@ -29,7 +29,16 @@ def canonical_profile_url(value: str | None) -> str | None:
 
 def profile_identity(value: str | None) -> str | None:
     canonical = canonical_profile_url(value)
-    return canonical.casefold() if canonical else None
+    if not canonical:
+        return None
+    parsed = urlparse(canonical)
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host in {"youtube.com", "youtu.be"}:
+        parts = [part for part in parsed.path.split("/") if part]
+        is_channel = bool(parts and (parts[0].startswith("@") or parts[0] in {"channel", "c", "user"}))
+        if not is_channel:
+            return None
+    return canonical.casefold()
 
 
 def detect_platform(url: str) -> str:
@@ -70,7 +79,7 @@ def clean_profile_links(value: list[dict] | None, fallback: str | None = None) -
     if not source and (fallback_url := canonical_profile_url(fallback)):
         source = [{"platform": detect_platform(fallback_url), "url": fallback_url}]
     seen: set[str] = set()
-    result: list[dict[str, str]] = []
+    result: list[dict] = []
     for item in source:
         url = canonical_profile_url(str(item.get("url") or ""))
         if not url:
@@ -84,6 +93,14 @@ def clean_profile_links(value: list[dict] | None, fallback: str | None = None) -
         if followers_k not in (None, ""):
             try:
                 cleaned["followers_k"] = round(float(followers_k), 3)
+            except (TypeError, ValueError):
+                pass
+        for field in ("source", "verified_at"):
+            if item.get(field):
+                cleaned[field] = str(item[field])
+        if item.get("confidence") not in (None, ""):
+            try:
+                cleaned["confidence"] = max(0, min(1, round(float(item["confidence"]), 3)))
             except (TypeError, ValueError):
                 pass
         result.append(cleaned)

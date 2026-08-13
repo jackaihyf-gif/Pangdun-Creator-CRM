@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -36,6 +37,7 @@ from .schemas import (
     LoginIn,
     MediaBase,
     MediaReviewResolveIn,
+    MediaReviewBatchIn,
     MediaMergeIn,
     MediaOut,
     ProductBase,
@@ -376,8 +378,15 @@ def list_audit_logs(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(require_roles("Admin", "Editor"))],
     limit: int = Query(default=50, ge=1, le=500),
+    entity_type: str | None = None,
+    entity_id: str | None = None,
 ):
-    rows = db.query(AuditLog).options(joinedload(AuditLog.user)).order_by(AuditLog.created_at.desc()).limit(limit).all()
+    query = db.query(AuditLog).options(joinedload(AuditLog.user))
+    if entity_type:
+        query = query.filter(AuditLog.entity_type == entity_type)
+    if entity_id:
+        query = query.filter(AuditLog.entity_id == entity_id)
+    rows = query.order_by(AuditLog.created_at.desc()).limit(limit).all()
     return {"items": [{
         "id": row.id,
         "user": row.user.name if row.user else None,
@@ -389,6 +398,31 @@ def list_audit_logs(
         "reason": row.reason,
         "created_at": row.created_at,
     } for row in rows]}
+
+
+@app.post("/api/audit-logs/{log_id}/restore")
+def restore_audit_log(
+    log_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin"))],
+):
+    log = db.get(AuditLog, log_id)
+    if not log or log.entity_type != "media" or log.action not in {"update", "restore"} or not log.before_json:
+        raise HTTPException(400, "该记录不支持单条恢复")
+    item = db.get(Media, int(log.entity_id or 0))
+    if not item:
+        raise HTTPException(404, "Media not found")
+    current = MediaOut.model_validate(item).model_dump(mode="json")
+    restored = MediaBase.model_validate(json.loads(log.before_json)).model_dump()
+    restored["profile_links"] = clean_profile_links(restored.get("profile_links"), restored.get("website_url"))
+    require_unique_media_identity(db, restored["profile_links"], item.id)
+    restored["website_url"] = restored["profile_links"][0]["url"] if restored["profile_links"] else None
+    for key, value in restored.items():
+        setattr(item, key, value)
+    add_audit_log(db, user, "restore", "media", item.id, before=current, after=restored, reason=f"恢复审计记录 #{log.id}")
+    db.commit()
+    db.refresh(item)
+    return MediaOut.model_validate(item)
 
 
 @app.get("/api/media", response_model=dict)
@@ -527,26 +561,74 @@ def normalize_media_data(
     return {"updated": updated, "needs_review": needs_review}
 
 
-def media_review_issues(item: Media) -> list[dict[str, str]]:
-    issues: list[dict[str, str]] = []
+def normalized_media_name(value: str | None) -> str:
+    return re.sub(r"[^\w]+", "", (value or "").casefold(), flags=re.UNICODE)
+
+
+def media_duplicate_candidates(db: Session) -> dict[int, list[dict[str, Any]]]:
+    media = db.query(Media).order_by(Media.id).all()
+    candidates: dict[int, list[dict[str, Any]]] = {}
+    identities = {
+        item.id: {identity for link in clean_profile_links(item.profile_links, item.website_url) if (identity := profile_identity(link.get("url")))}
+        for item in media
+    }
+    for index, left in enumerate(media):
+        left_name = normalized_media_name(left.name)
+        for right in media[index + 1:]:
+            right_name = normalized_media_name(right.name)
+            shared_profiles = identities[left.id] & identities[right.id]
+            similarity = SequenceMatcher(None, left_name, right_name).ratio() if left_name and right_name else 0
+            same_country = bool(left.country and right.country and left.country == right.country)
+            transposed_name = same_country and left_name[:4] == right_name[:4] and sorted(left_name) == sorted(right_name)
+            name_match = left_name == right_name or transposed_name or (min(len(left_name), len(right_name)) >= 5 and abs(len(left_name) - len(right_name)) <= 2 and similarity >= 0.84 and same_country)
+            if not shared_profiles and not name_match:
+                continue
+            reason = "主页完全相同" if shared_profiles else f"名称相似度 {round(similarity * 100)}%"
+            for source, target in ((left, right), (right, left)):
+                candidates.setdefault(source.id, []).append({
+                    "id": target.id,
+                    "name": target.name,
+                    "country": target.country,
+                    "platform_type": target.platform_type,
+                    "reason": reason,
+                })
+    return candidates
+
+
+def media_review_issues(item: Media, duplicate_items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
     has_contact_method = any(
         any((contact.email, contact.phone, contact.whatsapp, contact.telegram, contact.brief_email, contact.press_release_email))
         for contact in item.contacts
     )
     if not has_contact_method:
         issues.append({"code": "missing_contact", "category": "contact", "label": "缺少联系方式", "reason": "没有邮箱、电话、WhatsApp 或 Telegram，请补充可用联系入口。"})
-    for reason in re.findall(r"\[数据核验\]\s*([^\n]+)", item.notes or ""):
-        issues.append({"code": "profile_data", "category": "profile", "label": "主页 / 指标异常", "reason": reason.strip()})
+    if item.verification_status != "已核验":
+        for reason in re.findall(r"\[数据核验\]\s*([^\n]+)", item.notes or ""):
+            issues.append({"code": "profile_data", "category": "profile", "label": "主页 / 指标异常", "reason": reason.strip()})
     if item.verification_status == "有冲突":
         issues.append({"code": "data_conflict", "category": "conflict", "label": "资料冲突", "reason": "标准字典无法可靠归一当前资料，请人工确认。"})
+    if duplicate_items:
+        issues.append({"code": "possible_duplicate", "category": "duplicate", "label": "疑似重复", "reason": "；".join(f"{candidate['name']}（{candidate['reason']}）" for candidate in duplicate_items), "candidates": duplicate_items})
+    metric_exists = item.followers_or_traffic is not None
+    if metric_exists and not item.metric_source:
+        issues.append({"code": "missing_source", "category": "source", "label": "缺少数据来源", "reason": "粉丝量或网站流量没有记录来源，无法判断数据可信度。"})
+    verified_at = item.metric_verified_at or item.last_verified_at
+    if metric_exists and verified_at and verified_at < date.today() - timedelta(days=180):
+        issues.append({"code": "stale_metric", "category": "stale", "label": "数据已过期", "reason": f"粉丝量或流量最后核验于 {verified_at}，建议重新确认。"})
+    if item.data_capture_method == "agent" and item.data_confidence is not None and item.data_confidence < 0.8:
+        issues.append({"code": "low_confidence", "category": "confidence", "label": "低置信度", "reason": f"Agent 置信度为 {round(item.data_confidence * 100)}%，需要人工核对。"})
     return issues
 
 
 def media_review_rows(db: Session) -> list[dict[str, Any]]:
     rows = []
-    candidates = db.query(Media).filter(Media.verification_status != "已核验").order_by(Media.updated_at.desc()).all()
+    duplicate_map = media_duplicate_candidates(db)
+    candidates = db.query(Media).order_by(Media.updated_at.desc()).all()
     for item in candidates:
-        issues = media_review_issues(item)
+        if item.review_snoozed_until and item.review_snoozed_until >= date.today():
+            continue
+        issues = media_review_issues(item, duplicate_map.get(item.id))
         if not issues:
             continue
         rows.append({
@@ -559,8 +641,10 @@ def media_review_rows(db: Session) -> list[dict[str, Any]]:
             "issues": issues,
             "issue_codes": [issue["code"] for issue in issues],
             "categories": sorted({issue["category"] for issue in issues}),
+            "priority": any(issue["category"] in {"duplicate", "contact", "profile", "conflict", "confidence"} for issue in issues),
             "review_reason": "；".join(issue["reason"] for issue in issues),
             "notes": item.notes,
+            "snoozed_until": item.review_snoozed_until,
         })
     return rows
 
@@ -571,8 +655,41 @@ def media_review_queue(
     user: Annotated[User, Depends(current_user)],
 ):
     rows = media_review_rows(db)
-    category_counts = {category: sum(category in row["categories"] for row in rows) for category in ("contact", "profile", "conflict")}
-    return {"items": rows, "total": len(rows), "category_counts": category_counts}
+    categories = ("duplicate", "contact", "profile", "conflict", "source", "stale", "confidence")
+    category_counts = {category: sum(category in row["categories"] for row in rows) for category in categories}
+    priority_total = sum(bool(row["priority"]) for row in rows)
+    return {"items": rows, "total": priority_total, "all_total": len(rows), "maintenance_total": len(rows) - priority_total, "category_counts": category_counts}
+
+
+@app.post("/api/media-review-queue/batch")
+def batch_media_review(
+    payload: MediaReviewBatchIn,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(editable_user)],
+):
+    if payload.action not in {"resolve", "snooze"}:
+        raise HTTPException(400, "Unsupported review action")
+    items = db.query(Media).filter(Media.id.in_(set(payload.media_ids))).all()
+    changed: list[int] = []
+    skipped: list[dict[str, Any]] = []
+    duplicate_map = media_duplicate_candidates(db)
+    for item in items:
+        issues = media_review_issues(item, duplicate_map.get(item.id))
+        blocking_codes = {"missing_contact", "possible_duplicate", "missing_source", "stale_metric", "low_confidence", "data_conflict"}
+        if payload.action == "resolve" and any(issue["code"] in blocking_codes for issue in issues):
+            skipped.append({"id": item.id, "name": item.name, "reason": "仍有必须先修复的资料问题"})
+            continue
+        before = {"verification_status": item.verification_status, "review_snoozed_until": item.review_snoozed_until}
+        if payload.action == "snooze":
+            item.review_snoozed_until = date.today() + timedelta(days=payload.snooze_days)
+        else:
+            item.verification_status = "已核验"
+            item.last_verified_at = date.today()
+            item.review_snoozed_until = None
+        add_audit_log(db, user, f"review_{payload.action}", "media", item.id, before=before, after={"verification_status": item.verification_status, "review_snoozed_until": item.review_snoozed_until}, reason="待核验中心批量处理")
+        changed.append(item.id)
+    db.commit()
+    return {"changed": len(changed), "changed_ids": changed, "skipped": skipped}
 
 
 @app.post("/api/media-review-queue/{media_id}/resolve")
@@ -586,7 +703,7 @@ def resolve_media_review(
     item = db.get(Media, media_id)
     if not item:
         raise HTTPException(404, "Media not found")
-    issues = media_review_issues(item)
+    issues = media_review_issues(item, media_duplicate_candidates(db).get(item.id))
     if any(issue["code"] == "missing_contact" for issue in issues):
         raise HTTPException(400, "请先为该媒体补充可用联系方式")
     if payload.cooperation_status is not None and payload.cooperation_status not in COOPERATION_STATUSES:
@@ -627,6 +744,8 @@ def resolve_media_review(
     if payload.cooperation_status is not None:
         item.cooperation_status = payload.cooperation_status
     item.verification_status = "已核验"
+    item.last_verified_at = date.today()
+    item.review_snoozed_until = None
     result_note = f"[核验结果] {datetime.now().strftime('%Y-%m-%d')} 已完成人工核验"
     if payload.cooperation_status:
         result_note += f"；状态={payload.cooperation_status}"
@@ -685,6 +804,8 @@ def media_duplicates(
 @app.post("/api/media", response_model=MediaOut)
 def create_media(payload: MediaBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)], change_reason: Annotated[str | None, Header(alias="X-Change-Reason")] = None):
     normalized = normalize_media_payload(payload.model_dump())
+    normalized["data_capture_method"] = normalized.get("data_capture_method") or "manual"
+    normalized["data_source"] = normalized.get("data_source") or "CRM 人工录入"
     normalized["profile_links"] = clean_profile_links(normalized.get("profile_links"), normalized.get("website_url"))
     require_unique_media_identity(db, normalized["profile_links"])
     if len(normalized["profile_links"]) > 1:
@@ -869,6 +990,41 @@ def merge_media(item_id: int, payload: MediaMergeIn, db: Annotated[Session, Depe
     add_audit_log(db, user, "merge", "media", target.id, before=before, after={"target_media_id": target.id, "source_media_id": item_id, **moved}, reason=f"合并重复媒体 {source.name} → {target.name}")
     db.commit()
     return {"ok": True, "source_media_id": item_id, "target_media_id": target.id, **moved}
+
+
+@app.get("/api/media/{item_id}/merge-preview")
+def preview_media_merge(
+    item_id: int,
+    target_media_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin"))],
+):
+    source = db.query(Media).options(joinedload(Media.contacts), joinedload(Media.shipping_addresses), joinedload(Media.campaigns)).filter(Media.id == item_id).first()
+    target = db.query(Media).options(joinedload(Media.contacts), joinedload(Media.shipping_addresses), joinedload(Media.campaigns)).filter(Media.id == target_media_id).first()
+    if not source or not target:
+        raise HTTPException(404, "Media not found")
+    if source.id == target.id:
+        raise HTTPException(400, "请选择不同的目标媒体")
+    target_emails = {normalized_email(contact.email) for contact in target.contacts if normalized_email(contact.email)}
+    duplicate_contacts = [contact for contact in source.contacts if normalized_email(contact.email) in target_emails]
+    source_data = MediaOut.model_validate(source).model_dump(mode="json")
+    target_data = MediaOut.model_validate(target).model_dump(mode="json")
+    differing_fields = []
+    for field in ("name", "country", "platform_type", "followers_or_traffic", "cooperation_status", "metric_source", "metric_verified_at"):
+        if source_data.get(field) not in (None, "") and target_data.get(field) not in (None, "") and source_data.get(field) != target_data.get(field):
+            differing_fields.append({"field": field, "source": source_data.get(field), "target": target_data.get(field), "kept": "target"})
+    return {
+        "source": source_data,
+        "target": target_data,
+        "moves": {
+            "campaigns": len(source.campaigns),
+            "contacts": len(source.contacts) - len(duplicate_contacts),
+            "duplicate_contacts": len(duplicate_contacts),
+            "addresses": len(source.shipping_addresses),
+            "profile_links": len(clean_profile_links(source.profile_links, source.website_url)),
+        },
+        "field_conflicts": differing_fields,
+    }
 
 
 @app.get("/api/products", response_model=dict)
@@ -1974,11 +2130,15 @@ def create_contact(payload: ContactBase, db: Annotated[Session, Depends(get_db)]
     if not db.get(Media, payload.media_id):
         raise HTTPException(404, "Media not found")
     data = normalize_contact_data(payload.model_dump())
+    data["data_capture_method"] = data.get("data_capture_method") or "manual"
+    data["data_source"] = data.get("data_source") or "CRM 人工录入"
     require_unique_contact(db, data)
     if payload.is_primary:
         db.query(Contact).filter(Contact.media_id == payload.media_id).update({Contact.is_primary: False}, synchronize_session=False)
     item = Contact(**data)
     db.add(item)
+    db.flush()
+    add_audit_log(db, user, "create", "contact", item.id, after=data, reason="创建联系人")
     db.commit()
     db.refresh(item)
     return item
@@ -1991,12 +2151,14 @@ def update_contact(item_id: int, payload: ContactBase, db: Annotated[Session, De
         raise HTTPException(404, "Contact not found")
     if not db.get(Media, payload.media_id):
         raise HTTPException(404, "Media not found")
+    before = ContactOut.model_validate(item).model_dump(mode="json")
     data = normalize_contact_data(payload.model_dump())
     require_unique_contact(db, data, item_id)
     if payload.is_primary:
         db.query(Contact).filter(Contact.media_id == payload.media_id, Contact.id != item_id).update({Contact.is_primary: False}, synchronize_session=False)
     for key, value in data.items():
         setattr(item, key, value)
+    add_audit_log(db, user, "update", "contact", item.id, before=before, after=data, reason="更新联系人")
     db.commit()
     db.refresh(item)
     return item
@@ -2007,7 +2169,9 @@ def delete_contact(item_id: int, db: Annotated[Session, Depends(get_db)], user: 
     item = db.get(Contact, item_id)
     if not item:
         raise HTTPException(404, "Contact not found")
+    before = ContactOut.model_validate(item).model_dump(mode="json")
     db.query(ShippingAddress).filter(ShippingAddress.contact_id == item_id).update({ShippingAddress.contact_id: None}, synchronize_session=False)
+    add_audit_log(db, user, "delete", "contact", item.id, before=before, reason="删除联系人")
     db.delete(item)
     db.commit()
     return {"ok": True}

@@ -306,6 +306,9 @@ nav button:hover {
 .profile-editor .section-heading { margin: 0 0 10px; }
 .profile-link-row { display: grid; grid-template-columns: 140px minmax(0, 1fr) 110px 36px; gap: 8px; margin-top: 8px; align-items: center; }
 .profile-link-row-compact { grid-template-columns: 180px minmax(0, 1fr) 36px; }
+.profile-link-item { margin-top: 8px; padding: 9px; border: 1px solid #e7e3dc; border-radius: 11px; background: rgba(255,255,255,.72); }
+.profile-link-item .profile-link-row { margin-top: 0; }
+.profile-link-evidence { display: grid; grid-template-columns: minmax(0, 1fr) 170px 130px; gap: 8px; margin: 8px 44px 0 188px; }
 
 .media-balanced-field .ui-input,
 .media-balanced-field .ui-select-trigger {
@@ -1147,7 +1150,7 @@ textarea {
 
 .review-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 18px;
   padding: 16px 0;
@@ -1203,7 +1206,8 @@ textarea {
 .review-complete span { color: #7a8783; font-size: 13px; }
 
 @media (max-width: 900px) {
-  .review-row { grid-template-columns: minmax(0, 1fr); }
+  .review-row { grid-template-columns: 18px minmax(0, 1fr); }
+  .review-actions { grid-column: 2; }
   .review-actions { justify-content: flex-start; flex-wrap: wrap; }
 }
 
@@ -1219,6 +1223,17 @@ textarea {
 .danger-text {
   color: #ad493e;
 }
+
+.provenance-panel { padding: 15px; border: 1px solid #d9ebe6; border-radius: 13px; background: linear-gradient(135deg, #f4faf8, #fffdf9); }
+.provenance-panel .section-heading { margin-top: 0; }
+.provenance-panel .form-grid { margin-top: 10px; }
+
+.audit-list { display: grid; border: 1px solid #e7dfd4; border-radius: 13px; overflow: hidden; background: rgba(255,255,255,.68); }
+.audit-list article { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 13px; }
+.audit-list article + article { border-top: 1px solid #eee7de; }
+.audit-list article > div { display: grid; gap: 3px; min-width: 0; }
+.audit-list strong { color: #33413d; font-size: 12px; }
+.audit-list span { overflow: hidden; color: #87908c; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 .checkbox-label {
   display: flex !important;
@@ -1415,6 +1430,20 @@ pre {
   white-space: nowrap;
   transition: color .18s ease;
 }
+
+.review-checkbox { width: 15px; height: 15px; accent-color: #159888; }
+
+.review-batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0 4px;
+  color: #6f7a76;
+  font-size: 12px;
+}
+
+.review-batch-bar label { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; color: #34433f; font-weight: 650; }
+.review-batch-bar input { accent-color: #159888; }
 
 .execution-status-bar button::after {
   content: '';

@@ -1,5 +1,5 @@
 from backend.app.media_taxonomy import normalize_media_payload
-from backend.app.profile_links import canonical_profile_url, clean_profile_links
+from backend.app.profile_links import canonical_profile_url, clean_profile_links, profile_identity
 
 
 def test_taxonomy_normalizes_country_status_and_profile():
@@ -10,6 +10,7 @@ def test_taxonomy_normalizes_country_status_and_profile():
     assert normalized["verification_status"] == "待核验"
     assert canonical_profile_url("twitter.com/Example/?utm_source=test") == "https://x.com/example"
     assert clean_profile_links(None, "instagram.com/Example")[0]["url"] == "https://instagram.com/example"
+    assert profile_identity("https://youtube.com/watch?v=example") is None
 
 
 def test_media_contact_and_product_identities_are_unique(client, seeded_collaboration):
@@ -45,7 +46,7 @@ def test_review_queue_only_contains_actionable_issues(client, seeded_collaborati
     assert complete.json()["id"] not in queued_ids
     assert seeded_collaboration["media_id"] in queued_ids
     assert flagged.json()["id"] in queued_ids
-    assert queue["category_counts"] == {"contact": 1, "profile": 1, "conflict": 0}
+    assert queue["category_counts"] == {"duplicate": 0, "contact": 1, "profile": 1, "conflict": 0, "source": 0, "stale": 0, "confidence": 0}
 
     resolved = client.post(f"/api/media-review-queue/{flagged.json()['id']}/resolve", headers=headers, json={})
     assert resolved.status_code == 200
@@ -72,3 +73,39 @@ def test_media_merge_preserves_history_and_delete_is_guarded(client, seeded_coll
     empty = client.post("/api/media", headers=headers, json={"name": "Disposable Creator", "country": "US"})
     assert empty.status_code == 200
     assert client.delete(f"/api/media/{empty.json()['id']}", headers=headers).status_code == 200
+
+
+def test_quality_center_groups_duplicates_sources_and_can_snooze(client, seeded_collaboration):
+    headers = seeded_collaboration["headers"]
+    first = client.post("/api/media", headers=headers, json={"name": "Piscumo", "country": "韩国", "platform_type": "科技媒体 / 网站", "followers_or_traffic": 120})
+    second = client.post("/api/media", headers=headers, json={"name": "Piscomu", "country": "韩国", "platform_type": "科技媒体 / 网站"})
+    assert first.status_code == 200 and second.status_code == 200
+
+    queue = client.get("/api/media-review-queue", headers=headers).json()
+    first_row = next(item for item in queue["items"] if item["id"] == first.json()["id"])
+    assert {"possible_duplicate", "missing_source"}.issubset(first_row["issue_codes"])
+    assert queue["category_counts"]["duplicate"] >= 2
+    assert queue["category_counts"]["source"] >= 1
+
+    blocked = client.post("/api/media-review-queue/batch", headers=headers, json={"media_ids": [first.json()["id"]], "action": "resolve"})
+    assert blocked.status_code == 200
+    assert blocked.json()["changed"] == 0
+    assert len(blocked.json()["skipped"]) == 1
+
+    snoozed = client.post("/api/media-review-queue/batch", headers=headers, json={"media_ids": [first.json()["id"]], "action": "snooze", "snooze_days": 30})
+    assert snoozed.status_code == 200
+    assert snoozed.json()["changed"] == 1
+    assert first.json()["id"] not in {item["id"] for item in client.get("/api/media-review-queue", headers=headers).json()["items"]}
+
+
+def test_media_update_audit_can_be_restored(client, seeded_collaboration):
+    headers = seeded_collaboration["headers"]
+    media_id = seeded_collaboration["media_id"]
+    original = client.get(f"/api/media/{media_id}", headers=headers).json()["media"]
+    changed = {**original, "name": "Changed Creator", "data_source": "Media Kit", "data_capture_method": "manual", "data_confidence": 1, "last_verified_at": "2026-08-13"}
+    assert client.put(f"/api/media/{media_id}", headers=headers, json=changed).status_code == 200
+    logs = client.get(f"/api/audit-logs?entity_type=media&entity_id={media_id}", headers=headers).json()["items"]
+    update_log = next(item for item in logs if item["action"] == "update")
+    restored = client.post(f"/api/audit-logs/{update_log['id']}/restore", headers=headers)
+    assert restored.status_code == 200
+    assert restored.json()["name"] == original["name"]

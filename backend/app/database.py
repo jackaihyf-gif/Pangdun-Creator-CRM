@@ -52,6 +52,30 @@ def apply_compat_migrations() -> None:
                 connection.execute(text("ALTER TABLE media ADD COLUMN country_code VARCHAR(2)"))
             if "verification_status" not in columns:
                 connection.execute(text("ALTER TABLE media ADD COLUMN verification_status VARCHAR(40) DEFAULT '待核验'"))
+            additions = {
+                "data_source": "VARCHAR(255)",
+                "data_capture_method": "VARCHAR(40)",
+                "data_confidence": "FLOAT",
+                "last_verified_at": "DATE",
+                "review_snoozed_until": "DATE",
+            }
+            for name, definition in additions.items():
+                if name not in columns:
+                    connection.execute(text(f"ALTER TABLE media ADD COLUMN {name} {definition}"))
+        if "contacts" in tables:
+            columns = {column["name"] for column in inspector.get_columns("contacts")}
+            additions = {
+                "data_source": "VARCHAR(255)",
+                "data_capture_method": "VARCHAR(40)",
+                "data_confidence": "FLOAT",
+                "verified_at": "DATE",
+                "created_at": "DATETIME",
+                "updated_at": "DATETIME",
+            }
+            for name, definition in additions.items():
+                if name not in columns:
+                    connection.execute(text(f"ALTER TABLE contacts ADD COLUMN {name} {definition}"))
+            connection.execute(text("UPDATE contacts SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP), updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)"))
         if "campaigns" in tables:
             columns = {column["name"] for column in inspector.get_columns("campaigns")}
             additions = {

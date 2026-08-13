@@ -219,6 +219,8 @@ def confirm_import(db: Session, content: bytes, filename: str | None = None, use
                 ))
                 media_data["profile_links"] = clean_profile_links(None, media_data.get("website_url"))
                 media_data["website_url"] = media_data["profile_links"][0]["url"] if media_data["profile_links"] else None
+                media_data["data_capture_method"] = "import"
+                media_data["data_source"] = filename
                 media = Media(**media_data)
                 db.add(media)
                 db.flush()

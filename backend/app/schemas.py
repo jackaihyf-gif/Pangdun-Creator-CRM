@@ -40,6 +40,9 @@ class ProfileLink(BaseModel):
     platform: str
     url: str
     followers_k: float | None = None
+    source: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    verified_at: date | None = None
 
 
 class MediaBase(BaseModel):
@@ -56,6 +59,11 @@ class MediaBase(BaseModel):
     audience_metric_unit: str | None = None
     metric_source: str | None = None
     metric_verified_at: date | None = None
+    data_source: str | None = None
+    data_capture_method: str | None = None
+    data_confidence: float | None = Field(default=None, ge=0, le=1)
+    last_verified_at: date | None = None
+    review_snoozed_until: date | None = None
     media_tier: str | None = None
     cooperation_status: str | None = None
     verification_status: str = "待核验"
@@ -80,10 +88,16 @@ class ContactBase(BaseModel):
     press_release_email: str | None = None
     is_primary: bool = False
     notes: str | None = None
+    data_source: str | None = None
+    data_capture_method: str | None = None
+    data_confidence: float | None = Field(default=None, ge=0, le=1)
+    verified_at: date | None = None
 
 
 class ContactOut(ContactBase, ORMModel):
     id: int
+    created_at: datetime
+    updated_at: datetime
 
 
 class ShippingAddressBase(BaseModel):
@@ -255,6 +269,12 @@ class MediaReviewResolveIn(BaseModel):
 
 class MediaMergeIn(BaseModel):
     target_media_id: int
+
+
+class MediaReviewBatchIn(BaseModel):
+    media_ids: list[int]
+    action: str
+    snooze_days: int = Field(default=30, ge=1, le=365)
 
 
 class ShipmentBase(BaseModel):

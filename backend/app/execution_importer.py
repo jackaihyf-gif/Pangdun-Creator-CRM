@@ -130,6 +130,8 @@ def find_or_create_media(db: Session, row: dict[str, Any], create: bool = True) 
     data = normalize_media_payload({"name": name, "country": value(row, "国家"), "platform_type": value(row, "渠道"), "website_url": url})
     data["profile_links"] = clean_profile_links(None, url)
     data["website_url"] = data["profile_links"][0]["url"] if data["profile_links"] else None
+    data["data_capture_method"] = "import"
+    data["data_source"] = "费用执行表导入"
     item = Media(**data)
     db.add(item)
     db.flush()
