@@ -28,6 +28,8 @@ from .importer import confirm_import, preview_import
 from .models import Activity, AgentRun, AuditLog, Campaign, CampaignStageEvent, Contact, CostItem, Deliverable, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
 from .media_taxonomy import COOPERATION_STATUSES, COUNTRIES, MEDIA_CHANNELS, VERIFICATION_STATUSES, infer_audience_metric_type, metric_value_in_k, normalize_channel, normalize_cooperation_status, normalize_country, normalize_media_payload
 from .profile_links import clean_profile_links, profile_identity
+from .social_identity_service import SocialIdentityError, fetch_social_identity, merge_social_identity_proposal, social_platform
+from .youtube_service import YouTubeConfigurationError, YouTubeSourceError, fetch_youtube_channel, is_youtube_url, merge_youtube_proposal
 from .product_backfill import backfill_products, ensure_project_link, find_or_create_product, find_product_matches, product_aliases, product_identity
 from .schemas import (
     CampaignBase,
@@ -482,11 +484,28 @@ def extract_with_agent(
     source_label = (payload.source_label or (raw if payload.input_type == "url" else "粘贴文本")).strip()
     try:
         if payload.input_type == "url":
-            content, final_url = fetch_public_source(raw)
-            source_label = payload.source_label or final_url
+            if is_youtube_url(raw):
+                youtube_channel = fetch_youtube_channel(raw)
+                social_identity = None
+                content = youtube_channel.source_text()
+                source_label = payload.source_label or youtube_channel.canonical_url
+            elif social_platform(raw):
+                youtube_channel = None
+                social_identity = fetch_social_identity(raw)
+                content = social_identity.source_text()
+                source_label = payload.source_label or social_identity.canonical_url
+            else:
+                youtube_channel = None
+                social_identity = None
+                content, final_url = fetch_public_source(raw)
+                source_label = payload.source_label or final_url
         else:
+            youtube_channel = None
+            social_identity = None
             content = raw[:45_000]
-    except (AgentSourceError, httpx.HTTPError) as exc:
+    except YouTubeConfigurationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except (AgentSourceError, SocialIdentityError, YouTubeSourceError, httpx.HTTPError) as exc:
         raise HTTPException(400, f"读取来源失败：{exc}") from exc
     run = AgentRun(
         input_type=payload.input_type,
@@ -501,6 +520,10 @@ def extract_with_agent(
     db.refresh(run)
     try:
         proposal, usage = deepseek_json_extract(content, source_label)
+        if youtube_channel:
+            proposal = merge_youtube_proposal(proposal, youtube_channel)
+        elif social_identity:
+            proposal = merge_social_identity_proposal(proposal, social_identity)
         proposed_media = proposal.get("media") or {}
         links = proposed_media.get("profile_links") or []
         matches = media_identity_matches(db, links)
@@ -531,7 +554,8 @@ def extract_with_agent(
 
 AGENT_MEDIA_FIELDS = {
     "name", "country", "platform_type", "category", "profile_links",
-    "followers_or_traffic", "audience_metric_type", "cooperation_status", "notes",
+    "followers_or_traffic", "audience_metric_type", "metric_source", "metric_verified_at",
+    "cooperation_status", "notes",
 }
 AGENT_CONTACT_FIELDS = {"name", "role", "email", "phone", "whatsapp", "telegram"}
 

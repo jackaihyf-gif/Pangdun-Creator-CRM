@@ -1,6 +1,7 @@
 .env
 backend/data/*.db
 backend/data/agent.env
+backend/evals/results/
 backups/
 imports/
 uploads/

@@ -50,10 +50,13 @@ class TextExtractor(HTMLParser):
 
 
 def agent_config() -> dict[str, Any]:
+    from .youtube_service import youtube_config
+
     return {
         "configured": bool(os.getenv("DEEPSEEK_API_KEY")),
         "provider": "DeepSeek",
         "model": DEEPSEEK_MODEL,
+        "youtube": youtube_config(),
     }
 
 
@@ -138,6 +141,7 @@ SYSTEM_PROMPT = """你是 Pangdun KOL CRM 的档案提取助手。你的任务�
 每个非空字段必须在 evidence 中提供不超过 160 字的原文证据，并在 confidence 中提供 0 到 1 的置信度。
 粉丝量或网站月访问量统一换算为 K，例如 1250000 = 1250 K。合作状态只能使用：%s。
 渠道优先使用：%s。联系人只提取明确出现的姓名、职位、邮箱、电话、WhatsApp 或 Telegram。
+联系人最多返回 3 个，优先编辑、商务、PR 或寄样联系人；没有明确联系方式的普通作者不要逐个列出。
 JSON 结构必须是：
 {
   "summary": "一句话摘要",
@@ -203,6 +207,8 @@ def normalize_agent_proposal(raw: dict[str, Any], source_label: str) -> dict[str
         "profile_links": links,
         "followers_or_traffic": media.get("followers_or_traffic"),
         "audience_metric_type": media.get("audience_metric_type"),
+        "metric_source": (str(media.get("metric_source") or "").strip() or None),
+        "metric_verified_at": media.get("metric_verified_at"),
         "cooperation_status": media.get("cooperation_status") if media.get("cooperation_status") in COOPERATION_STATUSES else None,
         "notes": (str(media.get("notes") or "").strip() or None),
     }

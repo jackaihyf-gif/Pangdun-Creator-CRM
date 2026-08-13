@@ -1,0 +1,101 @@
+[
+  {
+    "id": "hardware-times-about",
+    "source_label": "Hardware Times official about page",
+    "url": "https://hardwaretimes.com/about-us/",
+    "expected": {
+      "media.name": ["Hardware Times"],
+      "media.platform_type": ["科技媒体 / 网站", "website"],
+      "media.followers_or_traffic": [1000]
+    }
+  },
+  {
+    "id": "tweaktown-about",
+    "source_label": "TweakTown official about page",
+    "url": "https://www.tweaktown.com/about/index.html",
+    "expected": {
+      "media.name": ["TweakTown"],
+      "media.platform_type": ["科技媒体 / 网站", "website"],
+      "media.country": ["澳大利亚", "Australia"]
+    }
+  },
+  {
+    "id": "techspot-about",
+    "source_label": "TechSpot official about page",
+    "url": "https://www.techspot.com/about/",
+    "expected": {
+      "media.name": ["TechSpot"],
+      "media.platform_type": ["科技媒体 / 网站", "website"],
+      "media.followers_or_traffic": [8000]
+    }
+  },
+  {
+    "id": "pc-guide-contact",
+    "source_label": "PC Guide official contact page",
+    "url": "https://www.pcguide.com/contact/",
+    "expected": {
+      "media.name": ["PC Guide", "PCguide"],
+      "media.platform_type": ["科技媒体 / 网站", "website"],
+      "media.country": ["英国", "United Kingdom", "UK"]
+    }
+  },
+  {
+    "id": "android-authority-contact",
+    "source_label": "Android Authority official contact page",
+    "url": "https://www.androidauthority.com/contact/",
+    "expected": {
+      "media.name": ["Android Authority"],
+      "media.platform_type": ["科技媒体 / 网站", "website"],
+      "contacts.email": ["contact@androidauthority.com"]
+    }
+  },
+  {
+    "id": "igorslab-impressum",
+    "source_label": "igor'sLAB official imprint",
+    "url": "https://www.igorslab.de/impressum/",
+    "expected": {
+      "media.name": ["igor'sLAB", "IgorsLAB"],
+      "media.platform_type": ["科技媒体 / 网站", "website"],
+      "contacts.phone": ["+49 371 4331276"]
+    }
+  },
+  {
+    "id": "liliputing-about",
+    "source_label": "Liliputing official about page",
+    "url": "https://liliputing.com/about/",
+    "expected": {
+      "media.name": ["Liliputing"],
+      "media.platform_type": ["科技媒体 / 网站", "website"]
+    }
+  },
+  {
+    "id": "hardwareluxx-internal",
+    "source_label": "Hardwareluxx official internal page",
+    "url": "https://www.hardwareluxx.de/index.php/internes.html",
+    "expected": {
+      "media.name": ["Hardwareluxx"],
+      "media.platform_type": ["科技媒体 / 网站", "website"]
+    }
+  },
+  {
+    "id": "cowcotland-about",
+    "source_label": "Cowcotland official about page",
+    "url": "https://www.cowcotland.com/about.html",
+    "expected": {
+      "media.name": ["Cowcotland", "CowcotLand"],
+      "media.platform_type": ["科技媒体 / 网站", "website"]
+    }
+  },
+  {
+    "id": "canaltech-about",
+    "source_label": "Canaltech official about page",
+    "url": "https://canaltech.com.br/sobre/",
+    "expected": {
+      "media.name": ["Canaltech"],
+      "media.platform_type": ["科技媒体 / 网站", "website"],
+      "media.country": ["巴西", "Brasil", "Brazil"],
+      "media.followers_or_traffic": [24000],
+      "contacts.email": ["redacao@canaltech.com.br"]
+    }
+  }
+]

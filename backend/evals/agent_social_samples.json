@@ -1,0 +1,92 @@
+[
+  {
+    "id": "youtube-linus-tech-tips",
+    "source_label": "Linus Tech Tips official YouTube channel",
+    "url": "https://www.youtube.com/@LinusTechTips",
+    "expected": {
+      "media.name": ["Linus Tech Tips"],
+      "media.platform_type": ["YouTube"]
+    }
+  },
+  {
+    "id": "youtube-gamers-nexus",
+    "source_label": "Gamers Nexus official YouTube channel",
+    "url": "https://www.youtube.com/@GamersNexus",
+    "expected": {
+      "media.name": ["Gamers Nexus", "Gamer Nexus"],
+      "media.platform_type": ["YouTube"]
+    }
+  },
+  {
+    "id": "youtube-hardware-unboxed",
+    "source_label": "Hardware Unboxed official YouTube channel",
+    "url": "https://www.youtube.com/@Hardwareunboxed",
+    "expected": {
+      "media.name": ["Hardware Unboxed"],
+      "media.platform_type": ["YouTube"]
+    }
+  },
+  {
+    "id": "youtube-der8auer",
+    "source_label": "der8auer official YouTube channel",
+    "url": "https://www.youtube.com/@der8auer",
+    "expected": {
+      "media.name": ["der8auer"],
+      "media.platform_type": ["YouTube"]
+    }
+  },
+  {
+    "id": "tiktok-nedalextech",
+    "source_label": "nedalextech official TikTok profile",
+    "url": "https://www.tiktok.com/@nedalextech",
+    "expected": {
+      "media.name": ["nedalextech", "@nedalextech"],
+      "media.platform_type": ["TikTok"]
+    }
+  },
+  {
+    "id": "tiktok-pinkxxiny",
+    "source_label": "pinkxxiny official TikTok profile",
+    "url": "https://www.tiktok.com/@pinkxxiny",
+    "expected": {
+      "media.name": ["pinkxxiny", "@pinkxxiny"],
+      "media.platform_type": ["TikTok"]
+    }
+  },
+  {
+    "id": "tiktok-mosclave",
+    "source_label": "mosclave official TikTok profile",
+    "url": "https://www.tiktok.com/@mosclave",
+    "expected": {
+      "media.name": ["mosclave", "@mosclave"],
+      "media.platform_type": ["TikTok"]
+    }
+  },
+  {
+    "id": "instagram-duda-tech",
+    "source_label": "Duda Tech official Instagram profile",
+    "url": "https://www.instagram.com/dudatech.oficial/",
+    "expected": {
+      "media.name": ["Duda Tech", "dudatech.oficial"],
+      "media.platform_type": ["Instagram"]
+    }
+  },
+  {
+    "id": "instagram-masters-of-tech",
+    "source_label": "masters.of.tech official Instagram profile",
+    "url": "https://www.instagram.com/masters.of.tech/",
+    "expected": {
+      "media.name": ["masters.of.tech", "Masters of Tech"],
+      "media.platform_type": ["Instagram"]
+    }
+  },
+  {
+    "id": "instagram-nico-cpk",
+    "source_label": "nico_cpk official Instagram profile",
+    "url": "https://www.instagram.com/nico_cpk/",
+    "expected": {
+      "media.name": ["nico_cpk", "Cpk_Nicolas"],
+      "media.platform_type": ["Instagram"]
+    }
+  }
+]
