@@ -50,3 +50,25 @@ def test_review_queue_only_contains_actionable_issues(client, seeded_collaborati
     resolved = client.post(f"/api/media-review-queue/{flagged.json()['id']}/resolve", headers=headers, json={})
     assert resolved.status_code == 200
     assert flagged.json()["id"] not in {item["id"] for item in client.get("/api/media-review-queue", headers=headers).json()["items"]}
+
+
+def test_media_merge_preserves_history_and_delete_is_guarded(client, seeded_collaboration):
+    headers = seeded_collaboration["headers"]
+    target = client.post("/api/media", headers=headers, json={"name": "Canonical Creator", "country": "US", "website_url": "https://youtube.com/@canonical"})
+    assert target.status_code == 200
+    assert client.post("/api/contacts", headers=headers, json={"media_id": target.json()["id"], "name": "Owner", "email": "owner@canonical.test"}).status_code == 200
+
+    merged = client.post(f"/api/media/{seeded_collaboration['media_id']}/merge", headers=headers, json={"target_media_id": target.json()["id"]})
+    assert merged.status_code == 200
+    assert merged.json()["campaigns"] == 1
+    assert client.get(f"/api/media/{seeded_collaboration['media_id']}", headers=headers).status_code == 404
+    detail = client.get(f"/api/media/{target.json()['id']}", headers=headers).json()
+    assert [campaign["id"] for campaign in detail["campaigns"]] == [seeded_collaboration["campaign_id"]]
+
+    guarded = client.delete(f"/api/media/{target.json()['id']}", headers=headers)
+    assert guarded.status_code == 409
+    assert guarded.json()["detail"]["counts"] == {"campaigns": 1, "contacts": 1, "addresses": 0}
+
+    empty = client.post("/api/media", headers=headers, json={"name": "Disposable Creator", "country": "US"})
+    assert empty.status_code == 200
+    assert client.delete(f"/api/media/{empty.json()['id']}", headers=headers).status_code == 200

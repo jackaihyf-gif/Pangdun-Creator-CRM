@@ -36,6 +36,7 @@ from .schemas import (
     LoginIn,
     MediaBase,
     MediaReviewResolveIn,
+    MediaMergeIn,
     MediaOut,
     ProductBase,
     ProductMergeIn,
@@ -797,9 +798,77 @@ def delete_media(item_id: int, db: Annotated[Session, Depends(get_db)], user: An
     item = db.get(Media, item_id)
     if not item:
         raise HTTPException(404, "Media not found")
+    counts = {
+        "campaigns": db.query(func.count(Campaign.id)).filter(Campaign.media_id == item_id).scalar() or 0,
+        "contacts": db.query(func.count(Contact.id)).filter(Contact.media_id == item_id).scalar() or 0,
+        "addresses": db.query(func.count(ShippingAddress.id)).filter(ShippingAddress.media_id == item_id).scalar() or 0,
+    }
+    if any(counts.values()):
+        raise HTTPException(409, detail={"message": "该媒体仍有关联数据，请先合并到正确媒体，避免丢失合作历史。", "counts": counts})
+    before = MediaOut.model_validate(item).model_dump(mode="json")
+    add_audit_log(db, user, "delete", "media", item.id, before=before, reason="管理员永久删除无关联媒体")
     db.delete(item)
     db.commit()
     return {"ok": True}
+
+
+@app.post("/api/media/{item_id}/merge")
+def merge_media(item_id: int, payload: MediaMergeIn, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(require_roles("Admin"))]):
+    source = db.query(Media).options(joinedload(Media.contacts), joinedload(Media.shipping_addresses), joinedload(Media.campaigns)).filter(Media.id == item_id).first()
+    target = db.query(Media).options(joinedload(Media.contacts), joinedload(Media.shipping_addresses), joinedload(Media.campaigns)).filter(Media.id == payload.target_media_id).first()
+    if not source or not target:
+        raise HTTPException(404, "Media not found")
+    if source.id == target.id:
+        raise HTTPException(400, "请选择不同的目标媒体")
+    before = {
+        "source": MediaOut.model_validate(source).model_dump(mode="json"),
+        "target": MediaOut.model_validate(target).model_dump(mode="json"),
+        "campaign_ids": [campaign.id for campaign in source.campaigns],
+        "contact_ids": [contact.id for contact in source.contacts],
+        "address_ids": [address.id for address in source.shipping_addresses],
+    }
+    moved = {"campaigns": 0, "contacts": 0, "addresses": 0, "duplicate_contacts": 0}
+    target_contacts_by_email = {contact.email.strip().lower(): contact for contact in target.contacts if contact.email}
+    for contact in list(source.contacts):
+        duplicate = target_contacts_by_email.get(contact.email.strip().lower()) if contact.email else None
+        if duplicate:
+            for address in list(contact.shipping_addresses):
+                address.contact = duplicate
+            for field in ("name", "role", "phone", "whatsapp", "telegram", "brief_email", "press_release_email", "notes"):
+                if not getattr(duplicate, field) and getattr(contact, field):
+                    setattr(duplicate, field, getattr(contact, field))
+            db.delete(contact)
+            moved["duplicate_contacts"] += 1
+        else:
+            contact.media = target
+            if contact.email:
+                target_contacts_by_email[contact.email.strip().lower()] = contact
+            moved["contacts"] += 1
+    target_has_default = any(address.is_default for address in target.shipping_addresses)
+    for address in list(source.shipping_addresses):
+        address.media = target
+        if target_has_default and address.is_default:
+            address.is_default = False
+        elif address.is_default:
+            target_has_default = True
+        moved["addresses"] += 1
+    for campaign in list(source.campaigns):
+        campaign.media = target
+        moved["campaigns"] += 1
+    target.profile_links = clean_profile_links([*(target.profile_links or []), *(source.profile_links or [])], target.website_url or source.website_url)
+    if target.profile_links:
+        target.website_url = target.profile_links[0]["url"]
+    for field in ("country", "country_code", "region", "category", "platform_type", "followers_or_traffic", "audience_metric_type", "audience_metric_unit", "metric_source", "metric_verified_at"):
+        if getattr(target, field) in (None, "") and getattr(source, field) not in (None, ""):
+            setattr(target, field, getattr(source, field))
+    cooperation_rank = {"未联系": 0, "待回复": 1, "洽谈中": 2, "已合作": 3, "暂缓": 1, "不合作": 1}
+    if cooperation_rank.get(source.cooperation_status or "", 0) > cooperation_rank.get(target.cooperation_status or "", 0):
+        target.cooperation_status = source.cooperation_status
+    db.flush()
+    db.delete(source)
+    add_audit_log(db, user, "merge", "media", target.id, before=before, after={"target_media_id": target.id, "source_media_id": item_id, **moved}, reason=f"合并重复媒体 {source.name} → {target.name}")
+    db.commit()
+    return {"ok": True, "source_media_id": item_id, "target_media_id": target.id, **moved}
 
 
 @app.get("/api/products", response_model=dict)

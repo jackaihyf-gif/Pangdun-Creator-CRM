@@ -253,6 +253,10 @@ class MediaReviewResolveIn(BaseModel):
     create_collaboration: bool = False
 
 
+class MediaMergeIn(BaseModel):
+    target_media_id: int
+
+
 class ShipmentBase(BaseModel):
     campaign_id: int
     shipping_address_id: int | None = None
