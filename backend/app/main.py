@@ -22,10 +22,10 @@ from .auth import CLI_TOKEN_EXPIRE_DAYS, clear_session_cookie, create_cli_token,
 from .database import Base, apply_compat_migrations, engine, get_db
 from .execution_importer import confirm_execution_import, preview_execution_import
 from .importer import confirm_import, preview_import
-from .models import Activity, AuditLog, Campaign, Contact, CostItem, Deliverable, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
-from .media_taxonomy import COOPERATION_STATUSES, MEDIA_CHANNELS, infer_audience_metric_type, metric_value_in_k, normalize_channel, normalize_cooperation_status, normalize_media_payload
-from .profile_links import clean_profile_links
-from .product_backfill import backfill_products, ensure_project_link, find_or_create_product
+from .models import Activity, AuditLog, Campaign, CampaignStageEvent, Contact, CostItem, Deliverable, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
+from .media_taxonomy import COOPERATION_STATUSES, COUNTRIES, MEDIA_CHANNELS, VERIFICATION_STATUSES, infer_audience_metric_type, metric_value_in_k, normalize_channel, normalize_cooperation_status, normalize_country, normalize_media_payload
+from .profile_links import clean_profile_links, profile_identity
+from .product_backfill import backfill_products, ensure_project_link, find_or_create_product, find_product_matches, product_aliases, product_identity
 from .schemas import (
     CampaignBase,
     CampaignOut,
@@ -51,6 +51,8 @@ from .schemas import (
     ActivityBase,
     ActivityOut,
     CollaborationBulkPatch,
+    CollaborationAdvanceIn,
+    CollaborationStatusActionIn,
     CollaborationPatch,
     ProjectShipmentBase,
     UserCreate,
@@ -96,7 +98,8 @@ DELIVERABLE_TYPES = {
     "Press Release",
     "Other",
 }
-EXECUTION_STATUSES = {"待确认", "待发货", "运输中", "已签收待产出", "内容审核中", "已发布", "已结算", "已暂停/取消"}
+EXECUTION_STATUSES = {"待确认", "待发货", "运输中", "已签收待产出", "内容审核中", "已发布", "已结算", "已暂停", "已取消", "已暂停/取消"}
+EXECUTION_SEQUENCE = ["待确认", "待发货", "运输中", "已签收待产出", "内容审核中", "已发布", "已结算"]
 NEXT_ACTION_BY_STATUS = {
     "待确认": "确认合作意向与报价",
     "待发货": "确认收件信息并安排寄样",
@@ -105,9 +108,11 @@ NEXT_ACTION_BY_STATUS = {
     "内容审核中": "完成内容审核并反馈修改意见",
     "已发布": "回收内容链接与效果数据",
     "已结算": "归档合作结果与复盘",
-    "已暂停/取消": "记录暂停原因与恢复条件",
+    "已暂停": "确认恢复条件与下一次检查时间",
+    "已取消": "归档取消原因与合作结论",
+    "已暂停/取消": "确认恢复条件与下一次检查时间",
 }
-FOLLOW_UP_CLOSED_STATUSES = {"已结算", "已暂停/取消"}
+FOLLOW_UP_CLOSED_STATUSES = {"已结算", "已暂停", "已取消", "已暂停/取消"}
 
 SHIPMENT_STATUS_PROGRESS = {
     "待发货": 1,
@@ -141,6 +146,88 @@ def collaboration_workflow_health(item: Campaign) -> dict[str, Any]:
     if item.follow_up_date < date.today():
         return {"workflow_health": "overdue", "workflow_label": "已逾期", "workflow_warnings": ["跟进日期已逾期"]}
     return {"workflow_health": "ready", "workflow_label": "已安排", "workflow_warnings": []}
+
+
+def collaboration_advance_state(item: Campaign) -> dict[str, Any]:
+    if item.execution_status not in EXECUTION_SEQUENCE:
+        return {"next_status": None, "advance_ready": False, "advance_blockers": [], "advance_requirements": []}
+    current_index = EXECUTION_SEQUENCE.index(item.execution_status)
+    if current_index == len(EXECUTION_SEQUENCE) - 1:
+        return {"next_status": None, "advance_ready": False, "advance_blockers": [], "advance_requirements": []}
+    target = EXECUTION_SEQUENCE[current_index + 1]
+    blockers: list[str] = []
+    requirements: list[str] = []
+    shipments = item.shipments or []
+    deliverables = item.deliverables or []
+    costs = item.cost_items or []
+    if target == "运输中" and not any((row.tracking_number or "").strip() for row in shipments):
+        blockers.append("缺少物流单号")
+        requirements.append("tracking_number")
+    elif target == "已签收待产出" and not any(row.delivered_at for row in shipments):
+        blockers.append("尚未确认签收日期")
+        requirements.append("delivered_at")
+    elif target == "内容审核中" and not deliverables:
+        blockers.append("尚未登记待审核内容")
+        requirements.append("content_title")
+    elif target == "已发布":
+        if not any((row.url or "").strip() for row in deliverables):
+            blockers.append("缺少发布链接")
+            requirements.append("publication_url")
+        if not any(row.published_at for row in deliverables):
+            blockers.append("缺少发布日期")
+            requirements.append("published_at")
+    elif target == "已结算":
+        if not costs:
+            blockers.append("尚未登记费用；如本次无需付款，请明确确认")
+            requirements.append("no_payment_required")
+        elif any(row.payment_status not in {"已付款", "无需付款"} for row in costs):
+            blockers.append("仍有未完成付款的费用记录")
+            requirements.append("settle_costs")
+    return {
+        "next_status": target,
+        "advance_ready": not blockers,
+        "advance_blockers": blockers,
+        "advance_requirements": requirements,
+    }
+
+
+def collaboration_stage_metadata(item: Campaign) -> dict[str, Any]:
+    entered_at = item.execution_status_changed_at or item.updated_at or item.created_at
+    elapsed = max(0, (datetime.utcnow() - entered_at).days) if entered_at else 0
+    return {"status_entered_at": entered_at, "days_in_status": elapsed}
+
+
+def set_campaign_status(
+    db: Session,
+    item: Campaign,
+    user: User | None,
+    target_status: str,
+    action: str,
+    reason: str | None = None,
+) -> None:
+    before_status = item.execution_status
+    if target_status == before_status:
+        return
+    item.execution_status = target_status
+    item.execution_status_changed_at = datetime.utcnow()
+    item.next_action = NEXT_ACTION_BY_STATUS.get(target_status)
+    item.follow_up_done = target_status == "已结算"
+    if target_status == "已发布":
+        item.stage = "Published"
+    elif target_status == "已结算":
+        item.stage = "Closed"
+    elif target_status in {"已暂停", "已暂停/取消"}:
+        item.stage = "Paused"
+    elif target_status == "已取消":
+        item.stage = "Closed"
+    elif item.stage in {"Published", "Closed", "Paused"}:
+        item.stage = "Not Started"
+    db.add(CampaignStageEvent(campaign_id=item.id, user_id=user.id if user else None, from_status=before_status, to_status=target_status, action=action, reason=reason))
+    label = {"advance": "阶段推进", "pause": "暂停执行", "cancel": "取消合作", "resume": "恢复执行", "rollback": "阶段回退", "undo": "撤销推进", "override": "管理员调整", "shipment_sync": "物流同步"}.get(action, "状态更新")
+    detail = f"执行阶段由“{before_status}”变更为“{target_status}”"
+    if reason:
+        detail += f"；原因：{reason}"
+    db.add(Activity(campaign_id=item.id, user_id=user.id if user else None, activity_type=label, content=detail))
 
 Base.metadata.create_all(bind=engine)
 apply_compat_migrations()
@@ -246,6 +333,8 @@ def options(user: Annotated[User, Depends(current_user)]):
         "payment_statuses": ["未付款", "部分付款", "已付款", "无需付款"],
         "media_channels": MEDIA_CHANNELS,
         "cooperation_statuses": COOPERATION_STATUSES,
+        "verification_statuses": VERIFICATION_STATUSES,
+        "countries": [{"code": item["code"], "label": item["label"]} for item in COUNTRIES],
     }
 
 
@@ -345,6 +434,7 @@ def media_quality_report(db: Session) -> dict[str, Any]:
         changes: list[str] = []
         channel = "多平台" if len(item.profile_links or []) > 1 else normalize_channel(item.platform_type, item.website_url)
         cooperation = normalize_cooperation_status(item.cooperation_status)
+        country, country_code, country_recognized = normalize_country(item.country)
         metric_type = infer_audience_metric_type(channel or item.platform_type)
         metric_k = metric_value_in_k(item.followers_or_traffic, item.audience_metric_unit)
         if channel and channel != item.platform_type:
@@ -354,6 +444,10 @@ def media_quality_report(db: Session) -> dict[str, Any]:
         if cooperation and cooperation != item.cooperation_status:
             changes.append(f"合作状态：{item.cooperation_status or '空白'} → {cooperation}")
         elif item.cooperation_status and not cooperation:
+            needs_review += 1
+        if country and (country != item.country or country_code != item.country_code):
+            changes.append(f"国家：{item.country or '空白'} → {country} ({country_code})")
+        elif item.country and not country_recognized:
             needs_review += 1
         if item.audience_metric_type != metric_type:
             changes.append(f"指标：{item.audience_metric_type or '未标记'} → {metric_type}")
@@ -384,8 +478,10 @@ def normalize_media_data(
     changed_ids: list[int] = []
     for item in db.query(Media).all():
         changed = False
+        was_pending_status = item.cooperation_status == "待核验"
         channel = "多平台" if len(item.profile_links or []) > 1 else normalize_channel(item.platform_type, item.website_url)
         cooperation = normalize_cooperation_status(item.cooperation_status)
+        country, country_code, country_recognized = normalize_country(item.country)
         metric_type = infer_audience_metric_type(channel or item.platform_type)
         metric_k = metric_value_in_k(item.followers_or_traffic, item.audience_metric_unit)
         if channel and channel != item.platform_type:
@@ -398,6 +494,19 @@ def normalize_media_data(
             changed = True
         elif item.cooperation_status and not cooperation:
             needs_review += 1
+            item.verification_status = "有冲突"
+        if country and country_recognized:
+            if item.country != country or item.country_code != country_code:
+                item.country = country
+                item.country_code = country_code
+                changed = True
+        elif item.country:
+            needs_review += 1
+            item.verification_status = "有冲突"
+            changed = True
+        if was_pending_status:
+            item.verification_status = "待核验"
+            changed = True
         if item.audience_metric_type != metric_type:
             item.audience_metric_type = metric_type
             changed = True
@@ -422,7 +531,7 @@ def media_review_queue(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(current_user)],
 ):
-    items = db.query(Media).filter(Media.cooperation_status == "待核验").order_by(Media.updated_at.desc()).all()
+    items = db.query(Media).filter(Media.verification_status != "已核验").order_by(Media.updated_at.desc()).all()
     rows = []
     for item in items:
         matches = re.findall(r"\[原合作状态\]\s*([^\n]+)", item.notes or "")
@@ -433,6 +542,7 @@ def media_review_queue(
             "country": item.country,
             "platform_type": item.platform_type,
             "website_url": item.website_url,
+            "verification_status": item.verification_status,
             "raw_status": matches[-1].strip() if matches else None,
             "review_reason": reason_matches[-1].strip() if reason_matches else None,
             "notes": item.notes,
@@ -451,8 +561,8 @@ def resolve_media_review(
     item = db.get(Media, media_id)
     if not item:
         raise HTTPException(404, "Media not found")
-    if payload.cooperation_status not in COOPERATION_STATUSES or payload.cooperation_status == "待核验":
-        raise HTTPException(400, "请选择待核验以外的标准合作状态")
+    if payload.cooperation_status not in COOPERATION_STATUSES:
+        raise HTTPException(400, "请选择标准合作状态")
     product = db.get(Product, payload.product_id) if payload.product_id else None
     if payload.product_id and not product:
         raise HTTPException(404, "Product not found")
@@ -478,6 +588,7 @@ def resolve_media_review(
             )
             db.add(campaign)
             db.flush()
+            db.add(CampaignStageEvent(campaign_id=campaign.id, user_id=user.id, from_status=None, to_status="待确认", action="create", reason="待核验中心建立"))
         else:
             if product and not campaign.product_id:
                 campaign.product_id = product.id
@@ -486,6 +597,7 @@ def resolve_media_review(
         ensure_project_link(db, project.id, product.id) if product else None
     before = {"cooperation_status": item.cooperation_status, "notes": item.notes}
     item.cooperation_status = payload.cooperation_status
+    item.verification_status = "已核验"
     result_note = f"[核验结果] {datetime.now().strftime('%Y-%m-%d')} 状态={payload.cooperation_status}"
     if product:
         result_note += f"；产品={product.model}"
@@ -494,7 +606,28 @@ def resolve_media_review(
     item.notes = "\n".join(part for part in [item.notes, result_note] if part)
     add_audit_log(db, user, "resolve_review", "media", item.id, before=before, after={"cooperation_status": item.cooperation_status, "product_id": product.id if product else None, "project_id": project.id if project else None, "campaign_id": campaign.id if campaign else None}, reason=change_reason)
     db.commit()
-    return {"ok": True, "media_id": item.id, "campaign_id": campaign.id if campaign else None, "remaining": db.query(Media).filter(Media.cooperation_status == "待核验").count()}
+    return {"ok": True, "media_id": item.id, "campaign_id": campaign.id if campaign else None, "remaining": db.query(Media).filter(Media.verification_status != "已核验").count()}
+
+
+def media_identity_matches(db: Session, links: list[dict], exclude_id: int | None = None) -> list[dict[str, Any]]:
+    requested = {identity for link in links if (identity := profile_identity(link.get("url")))}
+    if not requested:
+        return []
+    matches: list[dict[str, Any]] = []
+    for candidate in db.query(Media).all():
+        if candidate.id == exclude_id:
+            continue
+        candidate_links = clean_profile_links(candidate.profile_links, candidate.website_url)
+        overlap = requested & {identity for link in candidate_links if (identity := profile_identity(link.get("url")))}
+        if overlap:
+            matches.append({"id": candidate.id, "name": candidate.name, "matched_profiles": sorted(overlap)})
+    return matches
+
+
+def require_unique_media_identity(db: Session, links: list[dict], exclude_id: int | None = None) -> None:
+    matches = media_identity_matches(db, links, exclude_id)
+    if matches:
+        raise HTTPException(409, detail={"message": "主页已归属于其他媒体，请合并或修改主页", "matches": matches})
 
 
 @app.get("/api/media-duplicates")
@@ -505,18 +638,24 @@ def media_duplicates(
     website_url: str | None = None,
     country: str | None = None,
 ):
+    links = clean_profile_links(None, website_url)
+    identity_items = media_identity_matches(db, links)
+    if identity_items:
+        ids = [item["id"] for item in identity_items]
+        records = db.query(Media).filter(Media.id.in_(ids)).all()
+        return {"items": jsonable_encoder(records), "reasons": identity_items}
     query = db.query(Media).filter(func.lower(Media.name) == name.strip().lower())
-    if website_url:
-        query = query.filter(Media.website_url == website_url.strip())
-    elif country:
-        query = query.filter(Media.country == country.strip())
-    return {"items": jsonable_encoder(query.order_by(Media.updated_at.desc()).limit(10).all())}
+    if country:
+        canonical_country, _, _ = normalize_country(country)
+        query = query.filter(Media.country == (canonical_country or country.strip()))
+    return {"items": jsonable_encoder(query.order_by(Media.updated_at.desc()).limit(10).all()), "reasons": []}
 
 
 @app.post("/api/media", response_model=MediaOut)
 def create_media(payload: MediaBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)], change_reason: Annotated[str | None, Header(alias="X-Change-Reason")] = None):
     normalized = normalize_media_payload(payload.model_dump())
     normalized["profile_links"] = clean_profile_links(normalized.get("profile_links"), normalized.get("website_url"))
+    require_unique_media_identity(db, normalized["profile_links"])
     if len(normalized["profile_links"]) > 1:
         normalized["platform_type"] = "多平台"
     if normalized["profile_links"]:
@@ -554,6 +693,7 @@ def media_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: An
             "id": item.id,
             "name": item.name,
             "country": item.country,
+            "country_code": item.country_code,
             "region": item.region,
             "category": item.category,
             "platform_type": item.platform_type,
@@ -566,6 +706,7 @@ def media_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: An
             "metric_verified_at": item.metric_verified_at,
             "media_tier": item.media_tier,
             "cooperation_status": item.cooperation_status,
+            "verification_status": item.verification_status,
             "notes": item.notes,
         }),
         "contacts": [jsonable_encoder({
@@ -609,6 +750,7 @@ def update_media(item_id: int, payload: MediaBase, db: Annotated[Session, Depend
     before = MediaOut.model_validate(item).model_dump(mode="json")
     normalized = normalize_media_payload(payload.model_dump())
     normalized["profile_links"] = clean_profile_links(normalized.get("profile_links"), normalized.get("website_url"))
+    require_unique_media_identity(db, normalized["profile_links"], item_id)
     if len(normalized["profile_links"]) > 1:
         normalized["platform_type"] = "多平台"
     normalized["website_url"] = normalized["profile_links"][0]["url"] if normalized["profile_links"] else None
@@ -649,6 +791,32 @@ def product_payload(db: Session, item: Product) -> dict:
     return payload
 
 
+def normalized_alias_text(value: str | None) -> str | None:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[,，;；\n|/]+", value or ""):
+        label = raw.strip()
+        identity = product_identity(label)
+        if label and identity and identity not in seen:
+            seen.add(identity)
+            aliases.append(label)
+    return ", ".join(aliases) or None
+
+
+def require_unique_product(db: Session, data: dict[str, Any], exclude_id: int | None = None) -> None:
+    requested = {
+        product_identity(value)
+        for value in [data.get("model"), data.get("full_name"), *re.split(r"[,，;；\n|/]+", data.get("aliases") or "")]
+        if product_identity(value)
+    }
+    matches = []
+    for item in db.query(Product).all():
+        if item.id != exclude_id and requested & product_aliases(item):
+            matches.append({"id": item.id, "model": item.model, "aliases": sorted(requested & product_aliases(item))})
+    if matches:
+        raise HTTPException(409, detail={"message": "产品型号或别名已被占用，请合并产品或调整别名", "matches": matches})
+
+
 def sync_product_projects(db: Session, item: Product, project_ids: list[int]) -> None:
     valid_ids = {project.id for project in db.query(Project).filter(Project.id.in_(project_ids)).all()} if project_ids else set()
     if len(valid_ids) != len(set(project_ids)):
@@ -665,9 +833,9 @@ def sync_product_projects(db: Session, item: Product, project_ids: list[int]) ->
 def create_product(payload: ProductBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)]):
     data = payload.model_dump()
     project_ids = data.pop("project_ids", [])
-    if db.query(Product).filter(Product.model == data["model"].strip()).first():
-        raise HTTPException(400, "Product model already exists")
     data["model"] = data["model"].strip()
+    data["aliases"] = normalized_alias_text(data.get("aliases"))
+    require_unique_product(db, data)
     if not data.get("platform"):
         from .product_backfill import chipset_from_model
         data["platform"] = chipset_from_model(data["model"])
@@ -703,6 +871,9 @@ def update_product(item_id: int, payload: ProductBase, db: Annotated[Session, De
         raise HTTPException(404, "Product not found")
     data = payload.model_dump()
     project_ids = data.pop("project_ids", [])
+    data["model"] = data["model"].strip()
+    data["aliases"] = normalized_alias_text(data.get("aliases"))
+    require_unique_product(db, data, item_id)
     for key, value in data.items():
         setattr(item, key, value)
     sync_product_projects(db, item, project_ids)
@@ -739,6 +910,8 @@ def merge_product(item_id: int, payload: ProductMergeIn, db: Annotated[Session, 
     for link in source.project_links:
         if link.project_id not in target_project_ids:
             db.add(ProjectProduct(project_id=link.project_id, product_id=target.id))
+    retained_aliases = [target.aliases, source.model, source.full_name, source.aliases]
+    target.aliases = normalized_alias_text(", ".join(value for value in retained_aliases if value))
     db.query(Campaign).filter(Campaign.product_id == source.id).update({Campaign.product_id: target.id}, synchronize_session=False)
     db.query(ShipmentItem).filter(ShipmentItem.product_id == source.id).update({ShipmentItem.product_id: target.id, ShipmentItem.product_name: target.model}, synchronize_session=False)
     db.delete(source)
@@ -1174,16 +1347,17 @@ def create_project_shipment(project_id: int, payload: ProjectShipmentBase, db: A
         if not campaign or campaign.project_id != project_id or campaign.media_id != payload.media_id:
             raise HTTPException(400, "Selected collaboration does not belong to this project and media")
     else:
-        campaign = db.query(Campaign).filter(Campaign.project_id == project_id, Campaign.media_id == payload.media_id, Campaign.execution_status.notin_(["已发布", "已结算", "已暂停/取消"])).order_by(Campaign.updated_at.desc()).first()
+        campaign = db.query(Campaign).filter(Campaign.project_id == project_id, Campaign.media_id == payload.media_id, Campaign.execution_status.notin_(["已发布", "已结算", "已暂停", "已取消", "已暂停/取消"])).order_by(Campaign.updated_at.desc()).first()
     if not campaign:
         campaign = Campaign(project_id=project_id, media_id=payload.media_id, owner_id=payload.owner_id, execution_status="待发货", stage="Not Started", sample_status="Not Sent")
         db.add(campaign)
         db.flush()
-    elif campaign.execution_status not in {"已发布", "已结算", "已暂停/取消"} and payload.status in SHIPMENT_STATUS_PROGRESS:
+        db.add(CampaignStageEvent(campaign_id=campaign.id, user_id=user.id, from_status=None, to_status="待发货", action="shipment_sync", reason="登记项目寄样时创建合作"))
+    elif campaign.execution_status not in {"已发布", "已结算", "已暂停", "已取消", "已暂停/取消"} and payload.status in SHIPMENT_STATUS_PROGRESS:
         current_progress = SHIPMENT_STATUS_PROGRESS.get(campaign.execution_status, 0)
         next_progress = SHIPMENT_STATUS_PROGRESS.get(payload.status, current_progress)
         if next_progress > current_progress:
-            campaign.execution_status = payload.status
+            set_campaign_status(db, campaign, user, payload.status, "shipment_sync", "登记物流信息自动同步")
     data = payload.model_dump(exclude={"items", "media_id", "campaign_id", "owner_id"})
     apply_shipping_address_snapshot(db, payload.media_id, data)
     shipment = Shipment(campaign_id=campaign.id, **data)
@@ -1240,7 +1414,7 @@ def list_campaigns(
     page: int = 1,
     page_size: int = 20,
 ):
-    query = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media), joinedload(Campaign.owner), joinedload(Campaign.shipments)).outerjoin(Project)
+    query = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media), joinedload(Campaign.owner), joinedload(Campaign.shipments), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items)).outerjoin(Project)
     if history_only:
         query = query.filter(or_(Campaign.is_historical.is_(True), Project.is_archived.is_(True), Project.name.like(f"{HISTORICAL_PROJECT_PREFIX}%")))
     else:
@@ -1264,17 +1438,188 @@ def list_campaigns(
     for row in rows:
         encoded = jsonable_encoder(row)
         encoded.update(collaboration_workflow_health(row))
+        encoded.update(collaboration_advance_state(row))
+        encoded.update(collaboration_stage_metadata(row))
         items.append(encoded)
     return {"items": items, "total": total}
 
 
 @app.get("/api/collaborations/{item_id:int}")
 def collaboration_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(current_user)]):
-    item = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media).joinedload(Media.contacts), joinedload(Campaign.owner), joinedload(Campaign.shipments).joinedload(Shipment.items), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items), joinedload(Campaign.activities).joinedload(Activity.user)).filter(Campaign.id == item_id).first()
+    item = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media).joinedload(Media.contacts), joinedload(Campaign.owner), joinedload(Campaign.shipments).joinedload(Shipment.items), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items), joinedload(Campaign.activities).joinedload(Activity.user), joinedload(Campaign.stage_events).joinedload(CampaignStageEvent.user)).filter(Campaign.id == item_id).first()
     if not item:
         raise HTTPException(404, "Collaboration not found")
     result = jsonable_encoder(item)
     result.update(collaboration_workflow_health(item))
+    result.update(collaboration_advance_state(item))
+    result.update(collaboration_stage_metadata(item))
+    return result
+
+
+@app.post("/api/collaborations/{item_id:int}/advance")
+def advance_collaboration(
+    item_id: int,
+    payload: CollaborationAdvanceIn,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(editable_user)],
+):
+    item = db.query(Campaign).options(
+        joinedload(Campaign.project),
+        joinedload(Campaign.media),
+        joinedload(Campaign.owner),
+        joinedload(Campaign.shipments),
+        joinedload(Campaign.deliverables),
+        joinedload(Campaign.cost_items),
+    ).filter(Campaign.id == item_id).first()
+    if not item:
+        raise HTTPException(404, "Collaboration not found")
+    before_status = item.execution_status
+    advance = collaboration_advance_state(item)
+    if not advance["next_status"]:
+        raise HTTPException(409, "当前阶段没有可推进的下一阶段")
+    if payload.target_status != advance["next_status"]:
+        raise HTTPException(409, f"只能从“{before_status}”推进到相邻阶段“{advance['next_status']}”")
+
+    shipment = item.shipments[0] if item.shipments else None
+    if payload.tracking_number or payload.carrier or payload.delivered_at:
+        if shipment is None:
+            shipment = Shipment(campaign_id=item.id, status=before_status)
+            db.add(shipment)
+            item.shipments.append(shipment)
+        if payload.tracking_number:
+            shipment.tracking_number = payload.tracking_number.strip()
+        if payload.carrier:
+            shipment.carrier = payload.carrier.strip()
+        if payload.delivered_at:
+            shipment.delivered_at = payload.delivered_at
+
+    deliverable = item.deliverables[0] if item.deliverables else None
+    if payload.content_title or payload.publication_url or payload.published_at:
+        if deliverable is None:
+            deliverable = Deliverable(campaign_id=item.id, deliverable_type="Other")
+            db.add(deliverable)
+            item.deliverables.append(deliverable)
+        if payload.content_title:
+            deliverable.title = payload.content_title.strip()
+        if payload.publication_url:
+            deliverable.url = payload.publication_url.strip()
+        if payload.published_at:
+            deliverable.published_at = payload.published_at
+
+    if payload.target_status == "已结算" and not item.cost_items and payload.no_payment_required:
+        cost = CostItem(campaign_id=item.id, cost_type="无需付款", planned_amount=0, actual_amount=0, payment_status="无需付款")
+        db.add(cost)
+        item.cost_items.append(cost)
+
+    db.flush()
+    checked = collaboration_advance_state(item)
+    if checked["advance_blockers"]:
+        db.rollback()
+        raise HTTPException(409, {"message": "尚不能推进", "blockers": checked["advance_blockers"], "requirements": checked["advance_requirements"]})
+
+    set_campaign_status(db, item, user, payload.target_status, "advance")
+    if payload.follow_up_date is not None:
+        item.follow_up_date = payload.follow_up_date
+    if payload.target_status == "已发布":
+        item.stage = "Published"
+        item.actual_publish_date = payload.published_at or (deliverable.published_at if deliverable else None)
+    if shipment and payload.target_status in SHIPMENT_STATUS_PROGRESS:
+        shipment.status = payload.target_status
+    add_audit_log(db, user, "advance", "collaboration", item.id, before={"execution_status": before_status}, after=payload.model_dump(mode="json", exclude_none=True))
+    db.commit()
+    refreshed = db.query(Campaign).options(
+        joinedload(Campaign.project), joinedload(Campaign.media), joinedload(Campaign.owner),
+        joinedload(Campaign.shipments), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items), joinedload(Campaign.activities),
+    ).filter(Campaign.id == item.id).first()
+    result = jsonable_encoder(refreshed)
+    result.update(collaboration_workflow_health(refreshed))
+    result.update(collaboration_advance_state(refreshed))
+    result.update(collaboration_stage_metadata(refreshed))
+    return result
+
+
+@app.post("/api/collaborations/{item_id:int}/status-action")
+def collaboration_status_action(
+    item_id: int,
+    payload: CollaborationStatusActionIn,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(editable_user)],
+):
+    item = db.query(Campaign).options(joinedload(Campaign.stage_events)).filter(Campaign.id == item_id).first()
+    if not item:
+        raise HTTPException(404, "Collaboration not found")
+    reason = (payload.reason or "").strip() or None
+    action = payload.action
+    target: str | None = None
+    if action == "pause":
+        if item.execution_status in FOLLOW_UP_CLOSED_STATUSES:
+            raise HTTPException(409, "当前阶段不能暂停")
+        target = "已暂停"
+    elif action == "cancel":
+        if item.execution_status in {"已结算", "已取消"}:
+            raise HTTPException(409, "当前阶段不能取消")
+        if not reason or len(reason) < 2:
+            raise HTTPException(400, "取消合作时请填写具体原因")
+        target = "已取消"
+    elif action == "resume":
+        if item.execution_status not in {"已暂停", "已暂停/取消"}:
+            raise HTTPException(409, "只有已暂停合作可以恢复")
+        paused_event = next((event for event in sorted(item.stage_events, key=lambda row: row.created_at, reverse=True) if event.to_status in {"已暂停", "已暂停/取消"} and event.from_status in EXECUTION_SEQUENCE), None)
+        target = paused_event.from_status if paused_event else "待确认"
+    elif action == "rollback":
+        if not reason or len(reason) < 2:
+            raise HTTPException(400, "回退阶段时请填写具体原因")
+        if item.execution_status not in EXECUTION_SEQUENCE or EXECUTION_SEQUENCE.index(item.execution_status) == 0:
+            raise HTTPException(409, "当前阶段不能回退")
+        target = EXECUTION_SEQUENCE[EXECUTION_SEQUENCE.index(item.execution_status) - 1]
+    elif action == "override":
+        if user.role != "Admin":
+            raise HTTPException(403, "仅管理员可以指定阶段")
+        if payload.target_status not in EXECUTION_STATUSES:
+            raise HTTPException(400, "请选择有效目标阶段")
+        target = payload.target_status
+    else:
+        raise HTTPException(400, "不支持的状态操作")
+    before = item.execution_status
+    set_campaign_status(db, item, user, target, action, reason)
+    add_audit_log(db, user, f"status_{action}", "collaboration", item.id, before={"execution_status": before}, after={"execution_status": target}, reason=reason)
+    db.commit()
+    refreshed = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.media), joinedload(Campaign.owner), joinedload(Campaign.shipments), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items), joinedload(Campaign.activities), joinedload(Campaign.stage_events)).filter(Campaign.id == item.id).first()
+    result = jsonable_encoder(refreshed)
+    result.update(collaboration_workflow_health(refreshed))
+    result.update(collaboration_advance_state(refreshed))
+    result.update(collaboration_stage_metadata(refreshed))
+    return result
+
+
+@app.post("/api/collaborations/{item_id:int}/undo-advance")
+def undo_collaboration_advance(
+    item_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(editable_user)],
+):
+    item = db.query(Campaign).options(joinedload(Campaign.stage_events)).filter(Campaign.id == item_id).first()
+    if not item:
+        raise HTTPException(404, "Collaboration not found")
+    latest = max(item.stage_events, key=lambda row: row.created_at) if item.stage_events else None
+    if not latest or latest.action != "advance" or latest.to_status != item.execution_status:
+        raise HTTPException(409, "当前没有可撤销的推进")
+    if latest.user_id != user.id:
+        raise HTTPException(403, "只能撤销自己刚刚执行的推进")
+    if datetime.utcnow() - latest.created_at > timedelta(seconds=30):
+        raise HTTPException(409, "撤销时间已超过 30 秒；如需调整请使用回退一步")
+    target = latest.from_status
+    if target not in EXECUTION_STATUSES:
+        raise HTTPException(409, "原阶段不可恢复")
+    before = item.execution_status
+    set_campaign_status(db, item, user, target, "undo", "撤销刚刚的阶段推进")
+    add_audit_log(db, user, "undo_advance", "collaboration", item.id, before={"execution_status": before}, after={"execution_status": target})
+    db.commit()
+    refreshed = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.media), joinedload(Campaign.owner), joinedload(Campaign.shipments), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items), joinedload(Campaign.activities), joinedload(Campaign.stage_events)).filter(Campaign.id == item.id).first()
+    result = jsonable_encoder(refreshed)
+    result.update(collaboration_workflow_health(refreshed))
+    result.update(collaboration_advance_state(refreshed))
+    result.update(collaboration_stage_metadata(refreshed))
     return result
 
 
@@ -1290,22 +1635,12 @@ def patch_collaboration(
     if not item:
         raise HTTPException(404, "Collaboration not found")
     data = payload.model_dump(exclude_unset=True)
+    if "execution_status" in data and data["execution_status"] != item.execution_status:
+        raise HTTPException(409, "执行状态不能直接修改，请使用推进到下一阶段或状态操作")
     before = {key: jsonable_encoder(getattr(item, key, None)) for key in data}
     for key in ["project_id", "media_id", "owner_id", "collaboration_type", "expected_publish_date", "notes", "next_action", "follow_up_date", "follow_up_priority", "follow_up_done"]:
         if key in data:
             setattr(item, key, data[key])
-    if "execution_status" in data:
-        if data["execution_status"] not in EXECUTION_STATUSES:
-            raise HTTPException(400, "Invalid execution status")
-        item.execution_status = data["execution_status"]
-        if "next_action" not in data:
-            item.next_action = NEXT_ACTION_BY_STATUS.get(item.execution_status)
-        item.follow_up_done = item.execution_status == "已结算"
-        if item.execution_status == "已发布":
-            item.stage = "Published"
-        elif item.execution_status == "已暂停/取消":
-            item.stage = "Paused"
-        db.add(Activity(campaign_id=item.id, user_id=user.id, activity_type="状态更新", content=f"执行状态更新为：{item.execution_status}"))
     if data.get("follow_up_done") is True:
         db.add(Activity(campaign_id=item.id, user_id=user.id, activity_type="待办完成", content=f"已完成待办：{item.next_action or '未填写下一步动作'}"))
     if "tracking_number" in data or "oa_pi_number" in data:
@@ -1316,8 +1651,6 @@ def patch_collaboration(
             shipment.tracking_number = data["tracking_number"]
         if "oa_pi_number" in data:
             shipment.oa_pi_number = data["oa_pi_number"]
-        if "execution_status" in data:
-            shipment.status = item.execution_status
     add_audit_log(db, user, "update", "collaboration", item.id, before=before, after=data, reason=change_reason)
     db.commit()
     refreshed = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.media), joinedload(Campaign.owner), joinedload(Campaign.shipments)).filter(Campaign.id == item_id).first()
@@ -1340,6 +1673,8 @@ def patch_collaboration(
         "notes": refreshed.notes,
     }
     result.update(collaboration_workflow_health(refreshed))
+    result.update(collaboration_advance_state(refreshed))
+    result.update(collaboration_stage_metadata(refreshed))
     return result
 
 
@@ -1348,36 +1683,39 @@ def bulk_patch_collaborations(payload: CollaborationBulkPatch, db: Annotated[Ses
     ids = list(dict.fromkeys(payload.ids))
     if not ids:
         raise HTTPException(400, "请选择至少一条执行单")
-    data = payload.model_dump(exclude_unset=True, exclude={"ids"})
+    data = payload.model_dump(exclude_unset=True, exclude={"ids", "preview"})
     if not data:
         raise HTTPException(400, "请选择要修改的字段")
-    if data.get("execution_status") and data["execution_status"] not in EXECUTION_STATUSES:
-        raise HTTPException(400, "Invalid execution status")
+    if "execution_status" in data:
+        raise HTTPException(409, "批量操作不能修改执行状态，请逐条推进")
     items = db.query(Campaign).filter(Campaign.id.in_(ids)).all()
+    preview_rows = []
+    for item in items:
+        before = {key: getattr(item, key) for key in data}
+        after = {**before, **data}
+        preview_rows.append({"id": item.id, "media": item.media.name if item.media else None, "before": before, "after": after})
+    if payload.preview:
+        return {"preview": True, "updated": 0, "matched": len(items), "items": jsonable_encoder(preview_rows)}
     for item in items:
         for key, value in data.items():
             setattr(item, key, value)
-        if data.get("execution_status") == "已发布":
-            item.stage = "Published"
-        elif data.get("execution_status") == "已暂停/取消":
-            item.stage = "Paused"
-        if data.get("execution_status") and "next_action" not in data:
-            item.next_action = NEXT_ACTION_BY_STATUS.get(data["execution_status"])
-            item.follow_up_done = data["execution_status"] == "已结算"
         db.add(Activity(campaign_id=item.id, user_id=user.id, activity_type="批量更新", content="已通过工作台批量更新"))
     db.commit()
-    return {"updated": len(items)}
+    return {"preview": False, "updated": len(items), "items": jsonable_encoder(preview_rows)}
 
 
 @app.post("/api/campaigns", response_model=CampaignOut)
 def create_campaign(payload: CampaignBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)]):
     validate_campaign(payload)
+    if payload.execution_status != "待确认":
+        raise HTTPException(409, "新合作必须从“待确认”开始，历史数据请通过导入流程写入")
     data = payload.model_dump()
     if "next_action" not in payload.model_fields_set:
         data["next_action"] = NEXT_ACTION_BY_STATUS.get(data.get("execution_status"))
     item = Campaign(**data)
     db.add(item)
     db.flush()
+    db.add(CampaignStageEvent(campaign_id=item.id, user_id=user.id, from_status=None, to_status=item.execution_status, action="create", reason="新建合作"))
     db.add(Activity(campaign_id=item.id, user_id=user.id, activity_type="创建执行单", content=f"创建合作执行单，当前阶段：{item.execution_status}"))
     db.commit()
     db.refresh(item)
@@ -1390,6 +1728,8 @@ def update_campaign(item_id: int, payload: CampaignBase, db: Annotated[Session, 
     item = db.get(Campaign, item_id)
     if not item:
         raise HTTPException(404, "Campaign not found")
+    if payload.execution_status != item.execution_status:
+        raise HTTPException(409, "执行状态不能直接修改，请使用推进到下一阶段或状态操作")
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
     db.commit()
@@ -1497,13 +1837,48 @@ def list_contacts(db: Annotated[Session, Depends(get_db)], user: Annotated[User,
     return list_payload(query.order_by(Contact.id.desc()), page, page_size)
 
 
+def normalized_email(value: str | None) -> str | None:
+    return (value or "").strip().casefold() or None
+
+
+def normalized_phone(value: str | None) -> str | None:
+    digits = re.sub(r"\D+", "", value or "")
+    return digits or None
+
+
+def normalize_contact_data(data: dict[str, Any]) -> dict[str, Any]:
+    for field in ("email", "brief_email", "press_release_email"):
+        data[field] = normalized_email(data.get(field))
+    for field in ("phone", "whatsapp"):
+        data[field] = (data.get(field) or "").strip() or None
+    return data
+
+
+def require_unique_contact(db: Session, data: dict[str, Any], exclude_id: int | None = None) -> None:
+    emails = {normalized_email(data.get(field)) for field in ("email", "brief_email", "press_release_email")} - {None}
+    phones = {normalized_phone(data.get(field)) for field in ("phone", "whatsapp")} - {None}
+    matches: list[dict[str, Any]] = []
+    for item in db.query(Contact).all():
+        if item.id == exclude_id:
+            continue
+        item_emails = {normalized_email(getattr(item, field)) for field in ("email", "brief_email", "press_release_email")} - {None}
+        item_phones = {normalized_phone(getattr(item, field)) for field in ("phone", "whatsapp")} - {None}
+        reasons = [*(f"邮箱：{value}" for value in sorted(emails & item_emails)), *(f"电话：{value}" for value in sorted(phones & item_phones))]
+        if reasons:
+            matches.append({"id": item.id, "media_id": item.media_id, "name": item.name, "reasons": reasons})
+    if matches:
+        raise HTTPException(409, detail={"message": "联系人邮箱或电话已存在，请使用现有联系人或先合并", "matches": matches})
+
+
 @app.post("/api/contacts", response_model=ContactOut)
 def create_contact(payload: ContactBase, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(editable_user)]):
     if not db.get(Media, payload.media_id):
         raise HTTPException(404, "Media not found")
+    data = normalize_contact_data(payload.model_dump())
+    require_unique_contact(db, data)
     if payload.is_primary:
         db.query(Contact).filter(Contact.media_id == payload.media_id).update({Contact.is_primary: False}, synchronize_session=False)
-    item = Contact(**payload.model_dump())
+    item = Contact(**data)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -1517,9 +1892,11 @@ def update_contact(item_id: int, payload: ContactBase, db: Annotated[Session, De
         raise HTTPException(404, "Contact not found")
     if not db.get(Media, payload.media_id):
         raise HTTPException(404, "Media not found")
+    data = normalize_contact_data(payload.model_dump())
+    require_unique_contact(db, data, item_id)
     if payload.is_primary:
         db.query(Contact).filter(Contact.media_id == payload.media_id, Contact.id != item_id).update({Contact.is_primary: False}, synchronize_session=False)
-    for key, value in payload.model_dump().items():
+    for key, value in data.items():
         setattr(item, key, value)
     db.commit()
     db.refresh(item)
@@ -1769,7 +2146,7 @@ def workbench(
     items = query.order_by(Campaign.follow_up_date.asc().nullslast(), Campaign.updated_at.desc()).limit(300).all()
     today = func.date("now")
     visible_campaigns = db.query(Campaign.id).outerjoin(Project).filter(Campaign.is_historical.is_(False), or_(Campaign.project_id.is_(None), and_(Project.is_archived.is_(False), ~Project.name.like(f"{HISTORICAL_PROJECT_PREFIX}%"))))
-    overdue = visible_campaigns.filter(Campaign.expected_publish_date < today, Campaign.actual_publish_date.is_(None), Campaign.execution_status.notin_(["已发布", "已结算", "已暂停/取消"])).count()
+    overdue = visible_campaigns.filter(Campaign.expected_publish_date < today, Campaign.actual_publish_date.is_(None), Campaign.execution_status.notin_(["已发布", "已结算", "已暂停", "已取消", "已暂停/取消"])).count()
     all_costs = db.query(CostItem).join(Campaign).outerjoin(Project).filter(Campaign.is_historical.is_(False), or_(Campaign.project_id.is_(None), and_(Project.is_archived.is_(False), ~Project.name.like(f"{HISTORICAL_PROJECT_PREFIX}%")))).all()
     kpi_campaigns = db.query(Campaign).options(joinedload(Campaign.cost_items)).outerjoin(Project).filter(Campaign.is_historical.is_(False), or_(Campaign.project_id.is_(None), and_(Project.is_archived.is_(False), ~Project.name.like(f"{HISTORICAL_PROJECT_PREFIX}%")))).all()
     rows = []
@@ -1797,6 +2174,8 @@ def workbench(
             "pending_payment": pending_payment,
             "content_url": item.deliverables[0].url if item.deliverables else None,
             **collaboration_workflow_health(item),
+            **collaboration_advance_state(item),
+            **collaboration_stage_metadata(item),
         })
     return {
         "kpis": {

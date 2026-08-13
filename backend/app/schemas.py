@@ -45,6 +45,7 @@ class ProfileLink(BaseModel):
 class MediaBase(BaseModel):
     name: str
     country: str | None = None
+    country_code: str | None = None
     region: str | None = None
     category: str | None = None
     platform_type: str | None = None
@@ -57,6 +58,7 @@ class MediaBase(BaseModel):
     metric_verified_at: date | None = None
     media_tier: str | None = None
     cooperation_status: str | None = None
+    verification_status: str = "待核验"
     notes: str | None = None
 
 
@@ -217,10 +219,29 @@ class CollaborationPatch(BaseModel):
 
 class CollaborationBulkPatch(BaseModel):
     ids: list[int]
+    preview: bool = True
     owner_id: int | None = None
     execution_status: str | None = None
     follow_up_date: date | None = None
     follow_up_priority: str | None = None
+
+
+class CollaborationAdvanceIn(BaseModel):
+    target_status: str
+    follow_up_date: date | None = None
+    tracking_number: str | None = None
+    carrier: str | None = None
+    delivered_at: date | None = None
+    content_title: str | None = None
+    publication_url: str | None = None
+    published_at: date | None = None
+    no_payment_required: bool = False
+
+
+class CollaborationStatusActionIn(BaseModel):
+    action: str
+    reason: str | None = None
+    target_status: str | None = None
 
 
 class MediaReviewResolveIn(BaseModel):

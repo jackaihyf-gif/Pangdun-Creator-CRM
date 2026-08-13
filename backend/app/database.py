@@ -48,6 +48,10 @@ def apply_compat_migrations() -> None:
                 connection.execute(text("ALTER TABLE media ADD COLUMN metric_source VARCHAR(255)"))
             if "metric_verified_at" not in columns:
                 connection.execute(text("ALTER TABLE media ADD COLUMN metric_verified_at DATE"))
+            if "country_code" not in columns:
+                connection.execute(text("ALTER TABLE media ADD COLUMN country_code VARCHAR(2)"))
+            if "verification_status" not in columns:
+                connection.execute(text("ALTER TABLE media ADD COLUMN verification_status VARCHAR(40) DEFAULT '待核验'"))
         if "campaigns" in tables:
             columns = {column["name"] for column in inspector.get_columns("campaigns")}
             additions = {
@@ -58,14 +62,28 @@ def apply_compat_migrations() -> None:
                 "follow_up_priority": "VARCHAR(20) DEFAULT '普通'",
                 "follow_up_done": "BOOLEAN DEFAULT 0",
                 "is_historical": "BOOLEAN DEFAULT 0",
+                "execution_status_changed_at": "DATETIME",
             }
             for name, definition in additions.items():
                 if name not in columns:
                     connection.execute(text(f"ALTER TABLE campaigns ADD COLUMN {name} {definition}"))
                     if name == "is_historical":
                         connection.execute(text("UPDATE campaigns SET is_historical = 1 WHERE project_id IS NULL"))
+                    if name == "execution_status_changed_at":
+                        connection.execute(text("UPDATE campaigns SET execution_status_changed_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)"))
             if "archived_at" not in columns:
                 connection.execute(text("ALTER TABLE campaigns ADD COLUMN archived_at DATETIME"))
+            connection.execute(text("UPDATE campaigns SET execution_status = '已暂停' WHERE execution_status = '已暂停/取消'"))
+            if "campaign_stage_events" in tables:
+                connection.execute(text("""
+                    INSERT INTO campaign_stage_events (campaign_id, user_id, from_status, to_status, action, reason, created_at)
+                    SELECT campaigns.id, NULL, NULL, COALESCE(campaigns.execution_status, '待确认'), 'migration', '阶段治理上线时建立基线',
+                           COALESCE(campaigns.execution_status_changed_at, campaigns.updated_at, campaigns.created_at, CURRENT_TIMESTAMP)
+                    FROM campaigns
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM campaign_stage_events WHERE campaign_stage_events.campaign_id = campaigns.id
+                    )
+                """))
         if "projects" in tables:
             columns = {column["name"] for column in inspector.get_columns("projects")}
             additions = {

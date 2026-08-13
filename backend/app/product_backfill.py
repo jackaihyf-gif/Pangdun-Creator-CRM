@@ -14,6 +14,22 @@ def product_model(value: str) -> str:
     return value.strip()
 
 
+def product_identity(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").casefold())
+
+
+def product_aliases(item: Product) -> set[str]:
+    raw_values = [item.model, item.full_name, *(re.split(r"[,，;；\n|/]+", item.aliases or ""))]
+    return {identity for value in raw_values if (identity := product_identity(value))}
+
+
+def find_product_matches(db: Session, raw_name: str, exclude_id: int | None = None) -> list[Product]:
+    identity = product_identity(raw_name)
+    if not identity:
+        return []
+    return [item for item in db.query(Product).all() if item.id != exclude_id and identity in product_aliases(item)]
+
+
 def chipset_from_model(value: str) -> str | None:
     match = CHIPSET_RE.search(value)
     return match.group(1).upper() if match else None
@@ -30,9 +46,11 @@ def ensure_project_link(db: Session, project_id: int | None, product_id: int) ->
 
 def find_or_create_product(db: Session, raw_name: str, source_note: str | None = None) -> Product:
     model = product_model(raw_name)
-    item = db.query(Product).filter(Product.model == model).first()
-    if item:
-        return item
+    matches = find_product_matches(db, model)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f"产品名称“{raw_name}”匹配到多个标准产品，请先合并或整理别名")
     item = Product(
         model=model,
         full_name=model,

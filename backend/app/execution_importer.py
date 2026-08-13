@@ -9,8 +9,10 @@ from typing import Any
 import openpyxl
 from sqlalchemy.orm import Session
 
-from .models import Campaign, CostItem, Deliverable, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem
-from .product_backfill import ensure_project_link, find_or_create_product
+from .models import Campaign, CampaignStageEvent, CostItem, Deliverable, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem
+from .media_taxonomy import normalize_media_payload
+from .profile_links import clean_profile_links, profile_identity
+from .product_backfill import ensure_project_link, find_or_create_product, find_product_matches
 
 
 STATUS_MAP = {
@@ -25,6 +27,10 @@ STATUS_MAP = {
 def value(row: dict[str, Any], key: str) -> str | None:
     item = row.get(key)
     return str(item).strip() if item not in (None, "") else None
+
+
+def split_products(value_text: str | None) -> list[str]:
+    return [item.strip() for item in (value_text or "").splitlines() if item.strip()]
 
 
 def number(row: dict[str, Any], key: str) -> float | None:
@@ -63,6 +69,12 @@ def preview_execution_import(content: bytes, db: Session | None = None) -> dict[
             warnings.append("缺少 OA/PI，将进入历史导入待归类项目")
         if not value(row, "频道链接"):
             warnings.append("缺少频道链接，媒体去重需人工确认")
+        if db and value(row, "频道链接") and len(find_media_identity_matches(db, value(row, "频道链接"))) > 1:
+            warnings.append("频道主页匹配到多个媒体，需先合并")
+        if db:
+            for raw_product in split_products(value(row, "产品类型")):
+                if len(find_product_matches(db, raw_product)) > 1:
+                    warnings.append(f"产品“{raw_product}”匹配到多个型号或别名")
         warning_count += len(warnings)
         action = "新增"
         if db:
@@ -93,19 +105,32 @@ def preview_execution_import(content: bytes, db: Session | None = None) -> dict[
     }
 
 
+def find_media_identity_matches(db: Session, url: str | None) -> list[Media]:
+    identity = profile_identity(url)
+    if not identity:
+        return []
+    return [item for item in db.query(Media).all() if identity in {profile_identity(link.get("url")) for link in clean_profile_links(item.profile_links, item.website_url)}]
+
+
 def find_or_create_media(db: Session, row: dict[str, Any], create: bool = True) -> Media | None:
     name = value(row, "Channel") or "未命名渠道"
     url = value(row, "频道链接")
-    query = db.query(Media).filter(Media.name == name)
     if url:
-        item = query.filter(Media.website_url == url).first()
+        matches = find_media_identity_matches(db, url)
+        if len(matches) > 1:
+            raise ValueError("频道主页匹配到多个媒体，请先合并后再导入")
+        item = matches[0] if matches else None
     else:
-        item = query.filter(Media.country == value(row, "国家")).first()
+        normalized = normalize_media_payload({"name": name, "country": value(row, "国家"), "platform_type": value(row, "渠道")})
+        item = db.query(Media).filter(Media.name == name, Media.country == normalized.get("country")).first()
     if item:
         return item
     if not create:
         return None
-    item = Media(name=name, country=value(row, "国家"), platform_type=value(row, "渠道"), website_url=url)
+    data = normalize_media_payload({"name": name, "country": value(row, "国家"), "platform_type": value(row, "渠道"), "website_url": url})
+    data["profile_links"] = clean_profile_links(None, url)
+    data["website_url"] = data["profile_links"][0]["url"] if data["profile_links"] else None
+    item = Media(**data)
     db.add(item)
     db.flush()
     return item
@@ -185,6 +210,7 @@ def confirm_execution_import(db: Session, content: bytes, filename: str | None =
             campaign = Campaign(project_id=project.id, media_id=media.id, **campaign_values)
             db.add(campaign)
             db.flush()
+            db.add(CampaignStageEvent(campaign_id=campaign.id, user_id=user_id, from_status=None, to_status=campaign.execution_status, action="import", reason="历史执行表导入"))
             actions.append({"kind": "create", "entity": "campaign", "id": campaign.id})
             created += 1
             row_changed = True
@@ -202,7 +228,7 @@ def confirm_execution_import(db: Session, content: bytes, filename: str | None =
             row_changed = set_with_undo(shipment, "shipment", shipment_values, actions) or row_changed
         product_bundle = value(row, "产品类型")
         if product_bundle:
-            for product_name in product_bundle.split("\n"):
+            for product_name in split_products(product_bundle):
                 if product_name.strip():
                     raw_product = product_name.strip()
                     product = db.query(Product).filter(Product.model == raw_product).first()

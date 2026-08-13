@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CollaborationEditor, ExecutionStatusBar, Workbench } from './main';
+import { CollaborationEditor, ExecutionBoard, ExecutionStatusBar, Workbench } from './main';
 
 
 const jsonResponse = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), {
@@ -171,5 +171,69 @@ describe('合作执行关键交互', () => {
     await waitFor(() => expect(detailReads).toBeGreaterThanOrEqual(2));
     expect(await screen.findByText('Video Review')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '查看内容' })).toHaveAttribute('href', 'https://example.test/review');
+  });
+
+  it('看板缺少关键资料时才打开补充弹窗', async () => {
+    const onChanged = vi.fn();
+    const item = {
+      id: 42,
+      media_id: 9,
+      execution_status: '待发货',
+      next_status: '运输中',
+      advance_ready: false,
+      advance_blockers: ['缺少物流单号'],
+      advance_requirements: ['tracking_number'],
+      media: { id: 9, name: 'Safe Creator' },
+      project: { id: 7, name: 'Safe Launch' },
+      shipments: [],
+    } as any;
+    const fetchMock = vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/collaborations/42' && !options?.method) return jsonResponse(item);
+      if (url === '/api/collaborations/42/advance' && options?.method === 'POST') return jsonResponse({ ...item, execution_status: '运输中', next_status: '已签收待产出' });
+      return jsonResponse({ items: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ExecutionBoard items={[item]} canEdit onChanged={onChanged} onOpen={() => undefined} />);
+    expect(screen.getByText('缺少物流单号')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /确认已发货/ }));
+    expect(await screen.findByText('还差这些资料')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('物流单号'), { target: { value: 'TRACK-SAFE-42' } });
+    await userEvent.click(screen.getByRole('button', { name: '确认已发货' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    const advanceCall = fetchMock.mock.calls.find(([url, options]) => String(url) === '/api/collaborations/42/advance' && options?.method === 'POST');
+    expect(JSON.parse(String(advanceCall?.[1]?.body))).toMatchObject({ target_status: '运输中', tracking_number: 'TRACK-SAFE-42' });
+  });
+
+  it('看板资料齐全时一键推进且不打开弹窗', async () => {
+    const onChanged = vi.fn();
+    const item = {
+      id: 43,
+      media_id: 10,
+      execution_status: '待确认',
+      next_status: '待发货',
+      advance_ready: true,
+      advance_blockers: [],
+      advance_requirements: [],
+      media: { id: 10, name: 'Quick Creator' },
+      project: { id: 8, name: 'Quick Launch' },
+      shipments: [],
+    } as any;
+    const fetchMock = vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/collaborations/43' && !options?.method) return jsonResponse(item);
+      if (url === '/api/collaborations/43/advance' && options?.method === 'POST') return jsonResponse({ ...item, execution_status: '待发货', next_status: '运输中' });
+      return jsonResponse({ items: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ExecutionBoard items={[item]} canEdit onChanged={onChanged} onOpen={() => undefined} />);
+    await userEvent.click(screen.getByRole('button', { name: /进入待发货/ }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('补充资料')).not.toBeInTheDocument();
+    const advanceCall = fetchMock.mock.calls.find(([url, options]) => String(url) === '/api/collaborations/43/advance' && options?.method === 'POST');
+    expect(JSON.parse(String(advanceCall?.[1]?.body))).toEqual({ target_status: '待发货' });
   });
 });

@@ -11,8 +11,9 @@ import openpyxl
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from .models import Campaign, Contact, Deliverable, ImportBatch, Media
-from .media_taxonomy import normalize_media_payload
+from .models import Campaign, CampaignStageEvent, Contact, Deliverable, ImportBatch, Media
+from .media_taxonomy import normalize_country, normalize_media_payload
+from .profile_links import clean_profile_links, profile_identity
 
 
 HEADERS = {
@@ -159,6 +160,11 @@ def preview_import(content: bytes, db: Session | None = None) -> ImportResult:
                 continue
             media = matches[0] if matches else None
             if media:
+                foreign_contacts = find_contact_identity_matches(db, row, exclude_media_id=media.id)
+                if foreign_contacts:
+                    conflicts += 1
+                    previews.append({**row, "import_action": "冲突", "conflict_reason": f"联系人邮箱或电话已归属于其他媒体：{foreign_contacts[0].media.name if foreign_contacts[0].media else foreign_contacts[0].media_id}"})
+                    continue
                 contact = find_contact(db, media.id, row)
                 action = "跳过" if contact else "更新"
                 unchanged += int(action == "跳过")
@@ -194,6 +200,12 @@ def confirm_import(db: Session, content: bytes, filename: str | None = None, use
                 error_rows.append({"row_number": row.get("row_number"), "error": f"匹配到 {len(matches)} 条媒体，本行未导入"})
                 continue
             media = matches[0] if matches else None
+            foreign_contacts = find_contact_identity_matches(db, row, exclude_media_id=media.id if media else None)
+            if foreign_contacts:
+                conflicts += 1
+                skipped += 1
+                error_rows.append({"row_number": row.get("row_number"), "error": "联系人邮箱或电话已归属于其他媒体，本行未导入"})
+                continue
             if not media:
                 media_data = normalize_media_payload(dict(
                     name=name,
@@ -205,6 +217,8 @@ def confirm_import(db: Session, content: bytes, filename: str | None = None, use
                     cooperation_status=row.get("cooperation"),
                     notes=row.get("parent_company"),
                 ))
+                media_data["profile_links"] = clean_profile_links(None, media_data.get("website_url"))
+                media_data["website_url"] = media_data["profile_links"][0]["url"] if media_data["profile_links"] else None
                 media = Media(**media_data)
                 db.add(media)
                 db.flush()
@@ -216,7 +230,7 @@ def confirm_import(db: Session, content: bytes, filename: str | None = None, use
                     "platform_type": row.get("platform_type"), "website_url": row.get("website_url"),
                     "followers_or_traffic": safe_k(row.get("followers_or_traffic")),
                     "cooperation_status": row.get("cooperation"), "notes": row.get("parent_company"),
-                }), ["country", "category", "platform_type", "website_url", "followers_or_traffic", "media_tier", "cooperation_status", "notes"])
+                }), ["country", "country_code", "category", "platform_type", "website_url", "followers_or_traffic", "media_tier", "cooperation_status", "verification_status", "notes"])
                 if media_changes:
                     actions.append({"kind": "update", "entity": "media", "id": media.id, "before": media_changes})
                     updated += 1
@@ -252,6 +266,7 @@ def confirm_import(db: Session, content: bytes, filename: str | None = None, use
                     campaign = Campaign(media_id=media.id, stage=row.get("stage", "Not Started"), quotation_amount=row.get("quotation_amount"), quotation_currency=row.get("quotation_currency"), brief_sent=row.get("brief_sent_bool", False), notes=row.get("campaign_notes"))
                     db.add(campaign)
                     db.flush()
+                    db.add(CampaignStageEvent(campaign_id=campaign.id, user_id=user_id, from_status=None, to_status=campaign.execution_status, action="import", reason="媒体历史表导入"))
                     actions.append({"kind": "create", "entity": "campaign", "id": campaign.id})
                     created += 1
                 else:
@@ -300,6 +315,17 @@ def find_contact(db: Session, media_id: int, row: dict[str, Any]) -> Contact | N
     return next((item for item in candidates if name and normalized_identity(item.name) == name), None)
 
 
+def find_contact_identity_matches(db: Session, row: dict[str, Any], exclude_media_id: int | None = None) -> list[Contact]:
+    email = normalized_identity(row.get("email"))
+    phone = normalized_identity(row.get("phone"))
+    if not email and not phone:
+        return []
+    return [
+        item for item in db.query(Contact).all()
+        if item.media_id != exclude_media_id and ((email and normalized_identity(item.email) == email) or (phone and normalized_identity(item.phone) == phone))
+    ]
+
+
 def fill_missing(item: Any, data: dict[str, Any], fields: list[str]) -> dict[str, Any]:
     before: dict[str, Any] = {}
     for field in fields:
@@ -318,8 +344,10 @@ def find_media(db: Session, name: str, website_url: str | None, country: str | N
 
 def find_media_matches(db: Session, name: str, website_url: str | None, country: str | None) -> list[Media]:
     if website_url:
-        return db.query(Media).filter(func.lower(Media.name) == name.lower(), Media.website_url == website_url).all()
-    return db.query(Media).filter(func.lower(Media.name) == name.lower(), or_(Media.country == country, Media.country.is_(None))).all()
+        identity = profile_identity(website_url)
+        return [item for item in db.query(Media).all() if identity and identity in {profile_identity(link.get("url")) for link in clean_profile_links(item.profile_links, item.website_url)}]
+    canonical_country, _, _ = normalize_country(country)
+    return db.query(Media).filter(func.lower(Media.name) == name.lower(), or_(Media.country == canonical_country, Media.country.is_(None))).all()
 
 
 def safe_int(value: Any) -> int | None:

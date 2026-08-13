@@ -19,6 +19,7 @@ const buttonVariants = cva('ui-button', {
     size: {
       default: 'ui-button--md',
       sm: 'ui-button--sm',
+      lg: 'ui-button--lg',
       icon: 'ui-button--icon',
     },
   },
@@ -197,7 +198,7 @@ export function Dialog({
           <header className="drawer-header">
             <DialogPrimitive.Title asChild><Title>{title}</Title></DialogPrimitive.Title>
             <DialogPrimitive.Close asChild>
-              <button className="icon-button" type="button" title="关闭" aria-label="关闭"><X size={18} /></button>
+              <Button type="ghost" size="icon" title="关闭" aria-label="关闭"><X size={18} /></Button>
             </DialogPrimitive.Close>
           </header>
           <div className="drawer-body">{children}</div>
@@ -248,12 +249,12 @@ export function ConfirmHost() {
   return <Dialog variant="modal" title={firstLine || '确认操作'} onClose={() => close(false)} onOk={() => close(true)} okLabel={dangerous ? '确认继续' : '确认'} okType={dangerous ? 'danger' : 'primary'}><p className="confirm-message">{details.join('\n') || '请确认是否继续。'}</p></Dialog>;
 }
 
-type Notice = { message: string; description?: string };
+type Notice = { message: string; description?: string; action?: { label: string; onClick: () => void }; duration?: number };
 
 export const Notification = {
-  success: ({ message, description }: Notice) => toast.success(message, { description }),
-  warning: ({ message, description }: Notice) => toast.warning(message, { description }),
-  error: ({ message, description }: Notice) => toast.error(message, { description }),
+  success: ({ message, description, action, duration }: Notice) => toast.success(message, { description, action, duration }),
+  warning: ({ message, description, action, duration }: Notice) => toast.warning(message, { description, action, duration }),
+  error: ({ message, description, action, duration }: Notice) => toast.error(message, { description, action, duration }),
 };
 
 export function Toaster() {

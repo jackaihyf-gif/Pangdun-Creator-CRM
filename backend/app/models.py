@@ -63,6 +63,7 @@ class Media(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     country: Mapped[str | None] = mapped_column(String(120), index=True)
+    country_code: Mapped[str | None] = mapped_column(String(2), index=True)
     region: Mapped[str | None] = mapped_column(String(120))
     category: Mapped[str | None] = mapped_column(String(120), index=True)
     platform_type: Mapped[str | None] = mapped_column(String(120), index=True)
@@ -75,6 +76,7 @@ class Media(Base):
     metric_verified_at: Mapped[date | None] = mapped_column(Date)
     media_tier: Mapped[str | None] = mapped_column(String(80))
     cooperation_status: Mapped[str | None] = mapped_column(String(120), index=True)
+    verification_status: Mapped[str] = mapped_column(String(40), default="待核验", index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
@@ -203,6 +205,7 @@ class Campaign(Base):
     actual_publish_date: Mapped[date | None] = mapped_column(Date)
     notes: Mapped[str | None] = mapped_column(Text)
     execution_status: Mapped[str] = mapped_column(String(40), default="待确认", index=True)
+    execution_status_changed_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
     next_action: Mapped[str | None] = mapped_column(String(255))
     follow_up_date: Mapped[date | None] = mapped_column(Date, index=True)
     follow_up_priority: Mapped[str] = mapped_column(String(20), default="普通", index=True)
@@ -220,6 +223,23 @@ class Campaign(Base):
     shipments = relationship("Shipment", back_populates="campaign", cascade="all, delete-orphan")
     cost_items = relationship("CostItem", back_populates="campaign", cascade="all, delete-orphan")
     activities = relationship("Activity", back_populates="campaign", cascade="all, delete-orphan")
+    stage_events = relationship("CampaignStageEvent", back_populates="campaign", cascade="all, delete-orphan")
+
+
+class CampaignStageEvent(Base):
+    __tablename__ = "campaign_stage_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    from_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(40), index=True)
+    action: Mapped[str] = mapped_column(String(40), default="advance", index=True)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+
+    campaign = relationship("Campaign", back_populates="stage_events")
+    user = relationship("User")
 
 
 class Shipment(Base):
