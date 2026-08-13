@@ -866,6 +866,33 @@ textarea {
 .review-intro strong { color: #23423e; }
 .review-intro span { color: #70817d; font-size: 13px; }
 
+.review-filters {
+  display: flex;
+  gap: 22px;
+  margin-top: 8px;
+  padding: 0 2px;
+  border-bottom: 1px solid #e8dfd2;
+}
+.review-filters button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 9px;
+  border: 0;
+  background: transparent;
+  color: #75817d;
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+}
+.review-filters button::after { content: ''; position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: transparent; }
+.review-filters button.active { color: #078174; }
+.review-filters button.active::after { background: #1ba391; }
+.review-filters button span { min-width: 18px; padding: 1px 5px; border-radius: 9px; background: #edf2ef; color: #7d8a85; font-size: 10px; text-align: center; }
+.review-issue-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.review-issue-tags span { padding: 3px 7px; border-radius: 7px; background: #fff3d8; color: #8c641e; font-size: 10px; font-weight: 680; }
+
 .stage-overview {
   display: grid;
   grid-template-columns: repeat(8, minmax(92px, 1fr));

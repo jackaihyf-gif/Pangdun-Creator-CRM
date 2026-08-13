@@ -526,16 +526,28 @@ def normalize_media_data(
     return {"updated": updated, "needs_review": needs_review}
 
 
-@app.get("/api/media-review-queue")
-def media_review_queue(
-    db: Annotated[Session, Depends(get_db)],
-    user: Annotated[User, Depends(current_user)],
-):
-    items = db.query(Media).filter(Media.verification_status != "已核验").order_by(Media.updated_at.desc()).all()
+def media_review_issues(item: Media) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    has_contact_method = any(
+        any((contact.email, contact.phone, contact.whatsapp, contact.telegram, contact.brief_email, contact.press_release_email))
+        for contact in item.contacts
+    )
+    if not has_contact_method:
+        issues.append({"code": "missing_contact", "category": "contact", "label": "缺少联系方式", "reason": "没有邮箱、电话、WhatsApp 或 Telegram，请补充可用联系入口。"})
+    for reason in re.findall(r"\[数据核验\]\s*([^\n]+)", item.notes or ""):
+        issues.append({"code": "profile_data", "category": "profile", "label": "主页 / 指标异常", "reason": reason.strip()})
+    if item.verification_status == "有冲突":
+        issues.append({"code": "data_conflict", "category": "conflict", "label": "资料冲突", "reason": "标准字典无法可靠归一当前资料，请人工确认。"})
+    return issues
+
+
+def media_review_rows(db: Session) -> list[dict[str, Any]]:
     rows = []
-    for item in items:
-        matches = re.findall(r"\[原合作状态\]\s*([^\n]+)", item.notes or "")
-        reason_matches = re.findall(r"\[数据核验\]\s*([^\n]+)", item.notes or "")
+    candidates = db.query(Media).filter(Media.verification_status != "已核验").order_by(Media.updated_at.desc()).all()
+    for item in candidates:
+        issues = media_review_issues(item)
+        if not issues:
+            continue
         rows.append({
             "id": item.id,
             "name": item.name,
@@ -543,11 +555,23 @@ def media_review_queue(
             "platform_type": item.platform_type,
             "website_url": item.website_url,
             "verification_status": item.verification_status,
-            "raw_status": matches[-1].strip() if matches else None,
-            "review_reason": reason_matches[-1].strip() if reason_matches else None,
+            "issues": issues,
+            "issue_codes": [issue["code"] for issue in issues],
+            "categories": sorted({issue["category"] for issue in issues}),
+            "review_reason": "；".join(issue["reason"] for issue in issues),
             "notes": item.notes,
         })
-    return {"items": rows, "total": len(rows)}
+    return rows
+
+
+@app.get("/api/media-review-queue")
+def media_review_queue(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(current_user)],
+):
+    rows = media_review_rows(db)
+    category_counts = {category: sum(category in row["categories"] for row in rows) for category in ("contact", "profile", "conflict")}
+    return {"items": rows, "total": len(rows), "category_counts": category_counts}
 
 
 @app.post("/api/media-review-queue/{media_id}/resolve")
@@ -561,7 +585,10 @@ def resolve_media_review(
     item = db.get(Media, media_id)
     if not item:
         raise HTTPException(404, "Media not found")
-    if payload.cooperation_status not in COOPERATION_STATUSES:
+    issues = media_review_issues(item)
+    if any(issue["code"] == "missing_contact" for issue in issues):
+        raise HTTPException(400, "请先为该媒体补充可用联系方式")
+    if payload.cooperation_status is not None and payload.cooperation_status not in COOPERATION_STATUSES:
         raise HTTPException(400, "请选择标准合作状态")
     product = db.get(Product, payload.product_id) if payload.product_id else None
     if payload.product_id and not product:
@@ -595,10 +622,13 @@ def resolve_media_review(
             if payload.collaboration_type and not campaign.collaboration_type:
                 campaign.collaboration_type = payload.collaboration_type.strip()
         ensure_project_link(db, project.id, product.id) if product else None
-    before = {"cooperation_status": item.cooperation_status, "notes": item.notes}
-    item.cooperation_status = payload.cooperation_status
+    before = {"cooperation_status": item.cooperation_status, "verification_status": item.verification_status, "notes": item.notes}
+    if payload.cooperation_status is not None:
+        item.cooperation_status = payload.cooperation_status
     item.verification_status = "已核验"
-    result_note = f"[核验结果] {datetime.now().strftime('%Y-%m-%d')} 状态={payload.cooperation_status}"
+    result_note = f"[核验结果] {datetime.now().strftime('%Y-%m-%d')} 已完成人工核验"
+    if payload.cooperation_status:
+        result_note += f"；状态={payload.cooperation_status}"
     if product:
         result_note += f"；产品={product.model}"
     if project:
@@ -606,7 +636,7 @@ def resolve_media_review(
     item.notes = "\n".join(part for part in [item.notes, result_note] if part)
     add_audit_log(db, user, "resolve_review", "media", item.id, before=before, after={"cooperation_status": item.cooperation_status, "product_id": product.id if product else None, "project_id": project.id if project else None, "campaign_id": campaign.id if campaign else None}, reason=change_reason)
     db.commit()
-    return {"ok": True, "media_id": item.id, "campaign_id": campaign.id if campaign else None, "remaining": db.query(Media).filter(Media.verification_status != "已核验").count()}
+    return {"ok": True, "media_id": item.id, "campaign_id": campaign.id if campaign else None, "remaining": len(media_review_rows(db))}
 
 
 def media_identity_matches(db: Session, links: list[dict], exclude_id: int | None = None) -> list[dict[str, Any]]:

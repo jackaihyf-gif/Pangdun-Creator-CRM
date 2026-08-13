@@ -245,7 +245,7 @@ class CollaborationStatusActionIn(BaseModel):
 
 
 class MediaReviewResolveIn(BaseModel):
-    cooperation_status: str
+    cooperation_status: str | None = None
     product_id: int | None = None
     product_name: str | None = None
     project_id: int | None = None
