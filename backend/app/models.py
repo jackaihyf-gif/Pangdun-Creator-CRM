@@ -69,6 +69,8 @@ class Media(Base):
     platform_type: Mapped[str | None] = mapped_column(String(120), index=True)
     website_url: Mapped[str | None] = mapped_column(Text)
     profile_links: Mapped[list] = mapped_column(JSON, default=list)
+    youtube_channel_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    youtube_uploads_playlist_id: Mapped[str | None] = mapped_column(String(120))
     followers_or_traffic: Mapped[float | None] = mapped_column(Float)
     audience_metric_type: Mapped[str | None] = mapped_column(String(40))
     audience_metric_unit: Mapped[str | None] = mapped_column(String(20))
@@ -357,5 +359,31 @@ class Deliverable(Base):
     impressions: Mapped[int | None] = mapped_column(Integer)
     data_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
     performance_notes: Mapped[str | None] = mapped_column(Text)
+    platform_content_id: Mapped[str | None] = mapped_column(String(120), unique=True, index=True)
+    platform_channel_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    matched_tag: Mapped[str | None] = mapped_column(String(120))
+    match_method: Mapped[str | None] = mapped_column(String(80))
+    platform_published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    first_detected_at: Mapped[datetime | None] = mapped_column(DateTime)
+    monitoring_status: Mapped[str | None] = mapped_column(String(40), index=True)
+    monitoring_completed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     campaign = relationship("Campaign", back_populates="deliverables")
+    performance_snapshots = relationship("DeliverablePerformanceSnapshot", back_populates="deliverable", cascade="all, delete-orphan")
+
+
+class DeliverablePerformanceSnapshot(Base):
+    __tablename__ = "deliverable_performance_snapshots"
+    __table_args__ = (UniqueConstraint("deliverable_id", "sample_kind", name="uq_deliverable_sample_kind"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    deliverable_id: Mapped[int] = mapped_column(ForeignKey("deliverables.id"), index=True)
+    sample_kind: Mapped[str] = mapped_column(String(30), index=True)
+    views: Mapped[int | None] = mapped_column(Integer)
+    likes: Mapped[int | None] = mapped_column(Integer)
+    comments: Mapped[int | None] = mapped_column(Integer)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+    hours_since_publish: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(120), default="YouTube Data API v3")
+
+    deliverable = relationship("Deliverable", back_populates="performance_snapshots")

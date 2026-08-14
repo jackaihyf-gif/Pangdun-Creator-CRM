@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta
 from io import BytesIO
@@ -23,9 +24,10 @@ from sqlalchemy.orm import Session, joinedload
 from .agent_service import AgentConfigurationError, AgentSourceError, agent_config, deepseek_json_extract, fetch_public_source, source_hash
 from .auth import CLI_TOKEN_EXPIRE_DAYS, clear_session_cookie, create_cli_token, current_user, hash_password, require_roles, set_session_cookie, verify_password
 from .database import Base, apply_compat_migrations, engine, get_db
+from .content_monitor_service import monitor_runtime_status, run_content_monitor, start_content_monitor, stop_content_monitor
 from .execution_importer import confirm_execution_import, preview_execution_import
 from .importer import confirm_import, preview_import
-from .models import Activity, AgentRun, AuditLog, Campaign, CampaignStageEvent, Contact, CostItem, Deliverable, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
+from .models import Activity, AgentRun, AuditLog, Campaign, CampaignStageEvent, Contact, CostItem, Deliverable, DeliverablePerformanceSnapshot, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
 from .media_taxonomy import COOPERATION_STATUSES, COUNTRIES, MEDIA_CHANNELS, VERIFICATION_STATUSES, infer_audience_metric_type, metric_value_in_k, normalize_channel, normalize_cooperation_status, normalize_country, normalize_media_payload
 from .profile_links import clean_profile_links, profile_identity
 from .social_identity_service import SocialIdentityError, fetch_social_identity, merge_social_identity_proposal, social_platform
@@ -72,9 +74,9 @@ from .schemas import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_DIST = ROOT / "frontend" / "dist"
+FRONTEND_DIST = ROOT / "outputs" / "frontend-dist-v2"
 if not (FRONTEND_DIST / "assets").exists():
-    FRONTEND_DIST = ROOT / "outputs" / "frontend-dist-v2"
+    FRONTEND_DIST = ROOT / "frontend" / "dist"
 STAGES = {
     "Not Started",
     "To Contact",
@@ -244,7 +246,16 @@ apply_compat_migrations()
 with next(get_db()) as bootstrap_db:
     backfill_products(bootstrap_db)
 
-app = FastAPI(title="Pangdun KOL CRM")
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    start_content_monitor()
+    try:
+        yield
+    finally:
+        stop_content_monitor()
+
+
+app = FastAPI(title="Pangdun KOL CRM", lifespan=app_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -1502,6 +1513,42 @@ def product_detail_payload(item: Product) -> dict:
     }
 
 
+def deliverable_detail_payload(item: Deliverable) -> dict[str, Any]:
+    snapshots = sorted(item.performance_snapshots or [], key=lambda row: row.captured_at)
+    return {
+        "id": item.id,
+        "campaign_id": item.campaign_id,
+        "deliverable_type": item.deliverable_type,
+        "title": item.title,
+        "url": item.url,
+        "published_at": item.published_at,
+        "views": item.views,
+        "likes": item.likes,
+        "comments": item.comments,
+        "impressions": item.impressions,
+        "data_updated_at": item.data_updated_at,
+        "performance_notes": item.performance_notes,
+        "platform_content_id": item.platform_content_id,
+        "platform_channel_id": item.platform_channel_id,
+        "matched_tag": item.matched_tag,
+        "match_method": item.match_method,
+        "platform_published_at": item.platform_published_at,
+        "first_detected_at": item.first_detected_at,
+        "monitoring_status": item.monitoring_status,
+        "monitoring_completed_at": item.monitoring_completed_at,
+        "performance_snapshots": [{
+            "id": row.id,
+            "sample_kind": row.sample_kind,
+            "views": row.views,
+            "likes": row.likes,
+            "comments": row.comments,
+            "captured_at": row.captured_at,
+            "hours_since_publish": row.hours_since_publish,
+            "source": row.source,
+        } for row in snapshots],
+    }
+
+
 def project_detail_payload(item: Project) -> dict:
     return {
         "id": item.id,
@@ -1684,7 +1731,7 @@ def campaign_detail_payload(item: Campaign) -> dict:
         "media": media_summary_payload(item.media),
         "owner": user_summary_payload(item.owner),
         "shipments": [shipment_detail_payload(shipment) for shipment in item.shipments],
-        "deliverables": [{"id": row.id, "url": row.url, "deliverable_type": row.deliverable_type, "published_at": row.published_at, "impressions": row.impressions, "views": row.views, "likes": row.likes, "comments": row.comments} for row in item.deliverables],
+        "deliverables": [deliverable_detail_payload(row) for row in item.deliverables],
         "cost_items": [{"id": row.id, "cost_type": row.cost_type, "planned_amount": row.planned_amount, "actual_amount": row.actual_amount, "currency": row.currency, "payment_status": row.payment_status} for row in item.cost_items],
         "activities": [{"id": row.id, "activity_type": row.activity_type, "content": row.content, "created_at": row.created_at} for row in item.activities],
     }
@@ -1698,6 +1745,15 @@ def project_result_summary(item: Project) -> dict[str, Any]:
     views = sum(deliverable.views or 0 for deliverable in deliverables)
     likes = sum(deliverable.likes or 0 for deliverable in deliverables)
     comments = sum(deliverable.comments or 0 for deliverable in deliverables)
+    day_3_samples = [
+        snapshot
+        for deliverable in deliverables
+        for snapshot in deliverable.performance_snapshots
+        if snapshot.sample_kind == "day_3"
+    ]
+    three_day_views = sum(snapshot.views or 0 for snapshot in day_3_samples)
+    three_day_likes = sum(snapshot.likes or 0 for snapshot in day_3_samples)
+    three_day_comments = sum(snapshot.comments or 0 for snapshot in day_3_samples)
     reach = impressions or views
     published = sum(1 for campaign in campaigns if campaign.execution_status in {"已发布", "已结算"} or campaign.deliverables)
     return {
@@ -1710,6 +1766,11 @@ def project_result_summary(item: Project) -> dict[str, Any]:
         "views": views,
         "likes": likes,
         "comments": comments,
+        "three_day_content_count": len(day_3_samples),
+        "three_day_views": three_day_views,
+        "three_day_likes": three_day_likes,
+        "three_day_comments": three_day_comments,
+        "three_day_cpv": round(actual / three_day_views, 4) if three_day_views else None,
         "cpm_base": "曝光" if impressions else ("播放/阅读" if views else None),
         "cpm": round(actual / reach * 1000, 2) if reach else None,
     }
@@ -1956,10 +2017,11 @@ def list_campaigns(
 
 @app.get("/api/collaborations/{item_id:int}")
 def collaboration_detail(item_id: int, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(current_user)]):
-    item = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media).joinedload(Media.contacts), joinedload(Campaign.owner), joinedload(Campaign.shipments).joinedload(Shipment.items), joinedload(Campaign.deliverables), joinedload(Campaign.cost_items), joinedload(Campaign.activities).joinedload(Activity.user), joinedload(Campaign.stage_events).joinedload(CampaignStageEvent.user)).filter(Campaign.id == item_id).first()
+    item = db.query(Campaign).options(joinedload(Campaign.project), joinedload(Campaign.product), joinedload(Campaign.media).joinedload(Media.contacts), joinedload(Campaign.owner), joinedload(Campaign.shipments).joinedload(Shipment.items), joinedload(Campaign.deliverables).joinedload(Deliverable.performance_snapshots), joinedload(Campaign.cost_items), joinedload(Campaign.activities).joinedload(Activity.user), joinedload(Campaign.stage_events).joinedload(CampaignStageEvent.user)).filter(Campaign.id == item_id).first()
     if not item:
         raise HTTPException(404, "Collaboration not found")
     result = jsonable_encoder(item)
+    result["deliverables"] = [deliverable_detail_payload(row) for row in item.deliverables]
     result.update(collaboration_workflow_health(item))
     result.update(collaboration_advance_state(item))
     result.update(collaboration_stage_metadata(item))
@@ -2309,6 +2371,19 @@ def list_deliverables(
     if date_to:
         query = query.filter(Deliverable.published_at <= date_to)
     return list_payload(query.order_by(Deliverable.published_at.desc().nullslast()), page, page_size)
+
+
+@app.get("/api/content-monitor/status")
+def content_monitor_status(user: Annotated[User, Depends(current_user)]):
+    return monitor_runtime_status()
+
+
+@app.post("/api/content-monitor/run")
+def run_content_monitor_now(db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(require_roles("Admin"))]):
+    try:
+        return run_content_monitor(db)
+    except (YouTubeConfigurationError, YouTubeSourceError) as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @app.post("/api/deliverables", response_model=DeliverableOut)

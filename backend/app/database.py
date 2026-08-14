@@ -58,6 +58,8 @@ def apply_compat_migrations() -> None:
                 "data_confidence": "FLOAT",
                 "last_verified_at": "DATE",
                 "review_snoozed_until": "DATE",
+                "youtube_channel_id": "VARCHAR(120)",
+                "youtube_uploads_playlist_id": "VARCHAR(120)",
             }
             for name, definition in additions.items():
                 if name not in columns:
@@ -121,6 +123,20 @@ def apply_compat_migrations() -> None:
             columns = {column["name"] for column in inspector.get_columns("deliverables")}
             if "impressions" not in columns:
                 connection.execute(text("ALTER TABLE deliverables ADD COLUMN impressions INTEGER"))
+            additions = {
+                "platform_content_id": "VARCHAR(120)",
+                "platform_channel_id": "VARCHAR(120)",
+                "matched_tag": "VARCHAR(120)",
+                "match_method": "VARCHAR(80)",
+                "platform_published_at": "DATETIME",
+                "first_detected_at": "DATETIME",
+                "monitoring_status": "VARCHAR(40)",
+                "monitoring_completed_at": "DATETIME",
+            }
+            for name, definition in additions.items():
+                if name not in columns:
+                    connection.execute(text(f"ALTER TABLE deliverables ADD COLUMN {name} {definition}"))
+            connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_deliverables_platform_content_id ON deliverables (platform_content_id) WHERE platform_content_id IS NOT NULL"))
         if "shipments" in tables:
             columns = {column["name"] for column in inspector.get_columns("shipments")}
             if "shipping_address_id" not in columns:

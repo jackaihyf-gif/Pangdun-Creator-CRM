@@ -1076,6 +1076,7 @@ textarea {
 .detail-record-card header > div { display: grid; gap: 3px; }
 .detail-record-card header strong { color: #34413e; font-size: 13px; }
 .detail-record-card header span { color: #929b98; font-size: 9px; }
+.content-monitor-heading { display: flex; align-items: center; gap: 8px; }
 .record-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #ece8e1; border-radius: 10px; background: #ece8e1; }
 .record-facts-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .record-facts > div { display: grid; gap: 4px; min-width: 0; padding: 10px 12px; background: #fffefa; }

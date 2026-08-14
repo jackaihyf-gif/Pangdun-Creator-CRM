@@ -138,6 +138,8 @@ YouTube 官方数据适配器已实现：Agent 收到频道主页、`@handle`、
 
 TikTok 与 Instagram 采用轻量身份适配器：TikTok 通过官方 creator oEmbed 补全显示名称和标准主页，Instagram 通过公开主页标题补全显示名称和标准主页。两者不抓粉丝量，不读取登录 Cookie，不使用代理或非官方接口；真实样本各 3 条均通过。结果继续进入 Agent 审核预览，并在主页项中记录来源、核验日期和置信度。
 
+YouTube 内容履约监测采用确定性脚本，不调用 Agent：系统每 6 小时检查一次，但只有当前日期进入合作预计发布日期前 1 天至后 7 天的窗口时，才读取对应频道的新视频；预计发布日期为空的合作不会触发频道扫描。系统以频道 ID/handle、标准合作 Tag（默认 `#MAXSUN`）和“视频尚未关联其他合作”为匹配条件。频道 ID 与上传列表 ID 首次解析后写入媒体档案缓存，后续扫描不再重复解析 handle。唯一匹配时自动登记内容；同一媒体同时存在多条执行中合作时不猜测，保留为冲突。匹配后记录发现、约 24 小时和约 72 小时的播放、点赞与评论数据；这部分采样不受预计发布日期窗口限制，完成 72 小时采样后停止更新。Tag、轮询周期和日期窗口通过 `backend/data/agent.env` 的 `YOUTUBE_COLLABORATION_TAG`、`CONTENT_MONITOR_INTERVAL_SECONDS`、`CONTENT_MONITOR_DAYS_BEFORE`、`CONTENT_MONITOR_DAYS_AFTER` 配置。
+
 优先级 P0：
 
 1. 接入 DeepSeek V4 Flash 真实密钥并用实际 Media Kit、邮件和主页做小样本准确率验收。
