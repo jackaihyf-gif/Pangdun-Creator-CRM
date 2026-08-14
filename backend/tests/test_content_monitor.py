@@ -44,6 +44,7 @@ def configure_media_profile(media_id: int, campaign_id: int):
         media.profile_links = [{"platform": "YouTube", "url": "https://youtube.com/@testcreator"}]
         media.platform_type = "YouTube"
         campaign.expected_publish_date = datetime(2026, 8, 14).date()
+        campaign.project.collaboration_tag = "#Pangdun"
         db.commit()
 
 
@@ -63,6 +64,7 @@ def test_monitor_matches_once_and_stops_after_day_three(seeded_collaboration, mo
         first = run_content_monitor(db, client, published + timedelta(hours=10))
         assert first["matched"] == 1
         item = db.query(Deliverable).one()
+        assert item.matched_tag == "#Pangdun"
         assert item.monitoring_status == "waiting_day_1"
         assert [row.sample_kind for row in item.performance_snapshots] == ["discovery"]
 

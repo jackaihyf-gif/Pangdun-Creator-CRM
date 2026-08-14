@@ -42,15 +42,15 @@ class YouTubeVideo:
 
 
 def content_monitor_config() -> dict[str, Any]:
-    tag = os.getenv("YOUTUBE_COLLABORATION_TAG", "#MAXSUN").strip()
+    fallback_tag = os.getenv("YOUTUBE_COLLABORATION_TAG", "#MAXSUN").strip() or "#MAXSUN"
     interval = max(900, int(os.getenv("CONTENT_MONITOR_INTERVAL_SECONDS", "21600")))
     days_before = max(0, int(os.getenv("CONTENT_MONITOR_DAYS_BEFORE", "1")))
     days_after = max(0, int(os.getenv("CONTENT_MONITOR_DAYS_AFTER", "7")))
     enabled = os.getenv("CONTENT_MONITOR_ENABLED", "1").strip().casefold() not in {"0", "false", "off", "no"}
     return {
-        "configured": bool(os.getenv("YOUTUBE_API_KEY", "").strip() and tag),
+        "configured": bool(os.getenv("YOUTUBE_API_KEY", "").strip()),
         "enabled": enabled,
-        "tag": tag,
+        "tag": fallback_tag,
         "interval_seconds": interval,
         "days_before": days_before,
         "days_after": days_after,
@@ -169,6 +169,11 @@ def campaign_is_in_monitor_window(campaign: Campaign, current_date: date, config
     return bool(window and window[0] <= current_date <= window[1])
 
 
+def campaign_collaboration_tag(campaign: Campaign, config: dict[str, Any]) -> str:
+    project_tag = getattr(campaign.project, "collaboration_tag", None) if campaign.project else None
+    return str(project_tag or config["tag"]).strip()
+
+
 def _write_sample(db: Session, deliverable: Deliverable, video: YouTubeVideo, kind: str, captured_at: datetime) -> bool:
     exists = db.query(DeliverablePerformanceSnapshot).filter(
         DeliverablePerformanceSnapshot.deliverable_id == deliverable.id,
@@ -222,7 +227,7 @@ def _update_monitoring(db: Session, deliverable: Deliverable, video: YouTubeVide
 def run_content_monitor(db: Session, client: httpx.Client | None = None, captured_at: datetime | None = None) -> dict[str, Any]:
     config = content_monitor_config()
     if not config["configured"]:
-        raise YouTubeConfigurationError("内容监测需要 YOUTUBE_API_KEY 和合作 Tag")
+        raise YouTubeConfigurationError("内容监测需要 YOUTUBE_API_KEY")
     now = captured_at or datetime.utcnow()
     owns_client = client is None
     api_client = client or httpx.Client(timeout=20, headers={"User-Agent": "PangdunCRM-ContentMonitor/1.0"})
@@ -246,7 +251,7 @@ def run_content_monitor(db: Session, client: httpx.Client | None = None, capture
                     result["updated"] += 1
 
         current_date = now.date()
-        campaigns = db.query(Campaign).options(joinedload(Campaign.media)).filter(
+        campaigns = db.query(Campaign).options(joinedload(Campaign.media), joinedload(Campaign.project)).filter(
             Campaign.is_historical.is_(False),
             Campaign.execution_status.in_(ACTIVE_MONITOR_STATUSES),
             Campaign.expected_publish_date.isnot(None),
@@ -270,29 +275,34 @@ def run_content_monitor(db: Session, client: httpx.Client | None = None, capture
             result["channels_scanned"] += 1
             result["videos_checked"] += len(videos)
             for video in videos:
-                if not any((window := campaign_monitor_window(campaign, config)) and window[0] <= video.published_at.date() <= window[1] for campaign in media_campaigns):
+                matching_campaigns = [
+                    campaign for campaign in media_campaigns
+                    if (window := campaign_monitor_window(campaign, config))
+                    and window[0] <= video.published_at.date() <= window[1]
+                    and description_has_tag(video.description, campaign_collaboration_tag(campaign, config))
+                ]
+                if not matching_campaigns:
                     continue
-                if not description_has_tag(video.description, config["tag"]):
+                if len(matching_campaigns) != 1:
+                    result["conflicts"] += 1
                     continue
+                campaign = matching_campaigns[0]
+                matched_tag = campaign_collaboration_tag(campaign, config)
                 existing = db.query(Deliverable).filter(Deliverable.platform_content_id == video.video_id).first()
                 if not existing:
                     existing = next((row for row in db.query(Deliverable).filter(Deliverable.url.isnot(None)).all() if youtube_video_id(row.url) == video.video_id), None)
                 if existing:
-                    if existing.campaign.media_id != media.id:
+                    if existing.campaign_id != campaign.id:
                         result["conflicts"] += 1
                         continue
                     if not existing.platform_content_id:
                         existing.platform_content_id = video.video_id
                         existing.platform_channel_id = video.channel_id
-                        existing.matched_tag = config["tag"]
+                        existing.matched_tag = matched_tag
                         existing.match_method = "channel_tag_existing"
                         _update_monitoring(db, existing, video, now, True)
                         result["updated"] += 1
                     continue
-                if len(media_campaigns) != 1:
-                    result["conflicts"] += 1
-                    continue
-                campaign = media_campaigns[0]
                 deliverable = Deliverable(
                     campaign_id=campaign.id,
                     deliverable_type="YouTube Video",
@@ -300,7 +310,7 @@ def run_content_monitor(db: Session, client: httpx.Client | None = None, capture
                     url=video.url,
                     platform_content_id=video.video_id,
                     platform_channel_id=video.channel_id,
-                    matched_tag=config["tag"],
+                    matched_tag=matched_tag,
                     match_method="channel_tag",
                 )
                 db.add(deliverable)

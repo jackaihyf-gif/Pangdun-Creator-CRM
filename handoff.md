@@ -138,7 +138,7 @@ YouTube 官方数据适配器已实现：Agent 收到频道主页、`@handle`、
 
 TikTok 与 Instagram 采用轻量身份适配器：TikTok 通过官方 creator oEmbed 补全显示名称和标准主页，Instagram 通过公开主页标题补全显示名称和标准主页。两者不抓粉丝量，不读取登录 Cookie，不使用代理或非官方接口；真实样本各 3 条均通过。结果继续进入 Agent 审核预览，并在主页项中记录来源、核验日期和置信度。
 
-YouTube 内容履约监测采用确定性脚本，不调用 Agent：系统每 6 小时检查一次，但只有当前日期进入合作预计发布日期前 1 天至后 7 天的窗口时，才读取对应频道的新视频；预计发布日期为空的合作不会触发频道扫描。系统以频道 ID/handle、标准合作 Tag（默认 `#MAXSUN`）和“视频尚未关联其他合作”为匹配条件。频道 ID 与上传列表 ID 首次解析后写入媒体档案缓存，后续扫描不再重复解析 handle。唯一匹配时自动登记内容；同一媒体同时存在多条执行中合作时不猜测，保留为冲突。匹配后记录发现、约 24 小时和约 72 小时的播放、点赞与评论数据；这部分采样不受预计发布日期窗口限制，完成 72 小时采样后停止更新。Tag、轮询周期和日期窗口通过 `backend/data/agent.env` 的 `YOUTUBE_COLLABORATION_TAG`、`CONTENT_MONITOR_INTERVAL_SECONDS`、`CONTENT_MONITOR_DAYS_BEFORE`、`CONTENT_MONITOR_DAYS_AFTER` 配置。
+YouTube 内容履约监测采用确定性脚本，不调用 Agent：系统每 6 小时检查一次，但只有当前日期进入合作预计发布日期前 1 天至后 7 天的窗口时，才读取对应频道的新视频；预计发布日期为空的合作不会触发频道扫描。系统以频道 ID/handle、项目中可编辑的完整合作 Tag（新项目默认 `#MAXSUN`）和“视频尚未关联其他合作”为匹配条件。频道 ID 与上传列表 ID 首次解析后写入媒体档案缓存，后续扫描不再重复解析 handle。唯一匹配时自动登记内容；同一媒体同时存在多条执行中合作时，会根据各项目 Tag 分别匹配；若多个项目使用相同 Tag 或视频已关联其他合作，系统不猜测并保留为冲突。匹配后记录发现、约 24 小时和约 72 小时的播放、点赞与评论数据；这部分采样不受预计发布日期窗口限制，完成 72 小时采样后停止更新。团队可在“项目管理 → 项目详情 → 编辑项目信息”修改 Tag，下一轮扫描立即使用；`backend/data/agent.env` 的 `YOUTUBE_COLLABORATION_TAG` 仅作为没有项目归属的旧执行单回退值。轮询周期和日期窗口仍通过 `CONTENT_MONITOR_INTERVAL_SECONDS`、`CONTENT_MONITOR_DAYS_BEFORE`、`CONTENT_MONITOR_DAYS_AFTER` 配置。
 
 优先级 P0：
 
@@ -206,7 +206,7 @@ pangdun.cmd collab update 36 --status 运输中 --apply --reason "物流已确�
 
 ## 9. 本次交接时的验证状态
 
-- `npm run build` 通过。
+- 后端全量测试 50 项通过，前端交互测试 7 项通过，`npm run build` 通过。
 - 已在本地浏览器验证合作执行三个视图控制栏位置固定。
 - 已验证完整状态轨道与顶部下拉筛选同步。
 - 已验证当前“今天/逾期/未来 7 天均为 0、全部待办为 3”时，首页自动打开全部待办。
@@ -218,3 +218,13 @@ pangdun.cmd collab update 36 --status 运输中 --apply --reason "物流已确�
 - 合作跟进健康状态已统一为：已安排、待补行动、待排期、待补行动/日期、已逾期、待续排、无需跟进。
 - 新建与编辑合作支持今天、明天、3 天后和 7 天后的快捷排期；缺失项允许保存，但会明确提示。
 - 今日待办、全部合作、阶段看板、API 与 CLI 共用同一套跟进健康判断。
+- 已在 CRM 运行期间生成 SQLite 在线交付快照；快照完整性、SHA-256 以及媒体、联系人、项目、合作、寄样、内容、审计和用户数量均与正式库一致。
+
+## 10. 正式交付与数据迁移
+
+- 代码通过 Git 交付；`backend/data/kol_crm.db`、`backend/data/agent.env`、Token、备份和日志均由 `.gitignore` 排除。
+- 完整业务数据推荐通过 SQLite 快照交付，而不是压成一张 CSV。运行根目录 `backup.bat` 会使用 SQLite 在线备份接口，在 CRM 运行时生成一致快照，自动执行完整性检查并生成 SHA-256 文件。
+- 将 `backups/kol_crm_backup_*.db` 与同名 `.sha256` 通过可信私有渠道交给接收方。不要发送 `agent.env`；接收方应使用自己的 DeepSeek 与 YouTube API 密钥。
+- 接收方将快照复制为 `backend/data/kol_crm.db` 后运行 `start.bat`，或将快照放入 `backups` 并使用 `restore.bat`。启动后核对核心数据数量并重新登录 CLI/MCP。
+- 完整数据库包含联系人、收件地址、用户密码哈希、合作与审计记录。外部交付必须使用加密传输；只需要媒体名录时应另做脱敏 CSV。
+- 正式交付前至少完成一次：全量测试、前端生产构建、在线备份、备份完整性验证、SHA-256 对比和恢复演练。

@@ -70,6 +70,27 @@ def youtube_config() -> dict[str, Any]:
     return {"configured": bool(os.getenv("YOUTUBE_API_KEY")), "provider": "YouTube Data API v3"}
 
 
+def test_youtube_connection() -> str:
+    api_key = os.getenv("YOUTUBE_API_KEY", "").strip()
+    if not api_key:
+        raise YouTubeConfigurationError("尚未配置 YOUTUBE_API_KEY")
+    try:
+        with httpx.Client(timeout=20, headers={"User-Agent": "PangdunCRM-Agent/1.0"}) as client:
+            body = _get_json(
+                client,
+                "channels",
+                {"part": "id", "id": "UC_x5XG1OV2P6uZZ5FSM9Ttw"},
+                api_key,
+            )
+    except httpx.TimeoutException as exc:
+        raise YouTubeSourceError("连接 YouTube Data API 超时") from exc
+    except httpx.RequestError as exc:
+        raise YouTubeSourceError("无法连接 YouTube Data API") from exc
+    if not body.get("items"):
+        raise YouTubeSourceError("YouTube Data API 返回了异常响应")
+    return "YouTube Data API v3 可用"
+
+
 def _api_error(response: httpx.Response) -> YouTubeSourceError:
     message = "YouTube 官方接口请求失败"
     try:

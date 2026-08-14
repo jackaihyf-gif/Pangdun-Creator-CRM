@@ -4,7 +4,7 @@ import pytest
 
 from backend.app.agent_service import AgentSourceError, normalize_agent_proposal, validate_public_url
 from backend.app.social_identity_service import SocialProfileIdentity
-from backend.app.youtube_service import YouTubeChannel
+from backend.app.youtube_service import YouTubeChannel, YouTubeSourceError
 
 
 def sample_proposal(profile_url: str) -> dict:
@@ -57,6 +57,45 @@ def test_agent_blocks_private_urls():
         validate_public_url("http://127.0.0.1:8000/api/users")
     with pytest.raises(AgentSourceError):
         validate_public_url("http://localhost/admin")
+
+
+def test_integration_status_and_successful_connection_test(client, seeded_collaboration, monkeypatch):
+    headers = seeded_collaboration["headers"]
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-key")
+    monkeypatch.setattr("backend.app.main.test_deepseek_connection", lambda: "deepseek-v4-flash 可用")
+
+    initial = client.get("/api/agent/status", headers=headers)
+    assert initial.status_code == 200
+    assert initial.json()["configured"] is True
+    assert initial.json()["last_test"] is None
+
+    tested = client.post("/api/integrations/deepseek/test", headers=headers)
+    assert tested.status_code == 200
+    assert tested.json()["ok"] is True
+    assert tested.json()["status"] == "connected"
+    assert tested.json()["tested_at"]
+
+    refreshed = client.get("/api/agent/status", headers=headers).json()
+    assert refreshed["last_test"]["status"] == "connected"
+    assert "可用" in refreshed["last_test"]["message"]
+
+
+def test_failed_integration_test_is_recorded_without_secret(client, seeded_collaboration, monkeypatch):
+    headers = seeded_collaboration["headers"]
+    monkeypatch.setenv("YOUTUBE_API_KEY", "must-not-be-returned")
+    monkeypatch.setattr(
+        "backend.app.main.test_youtube_connection",
+        lambda: (_ for _ in ()).throw(YouTubeSourceError("YouTube API Key 无效或尚未启用")),
+    )
+
+    tested = client.post("/api/integrations/youtube/test", headers=headers)
+    assert tested.status_code == 200
+    assert tested.json()["ok"] is False
+    assert tested.json()["status"] == "failed"
+    assert "must-not-be-returned" not in tested.text
+
+    refreshed = client.get("/api/agent/status", headers=headers).json()
+    assert refreshed["youtube"]["last_test"]["status"] == "failed"
 
 
 def test_agent_extract_preview_apply_and_reject(client, seeded_collaboration, monkeypatch):

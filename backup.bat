@@ -2,17 +2,17 @@
 setlocal
 cd /d "%~dp0"
 
-if not exist backend\data\kol_crm.db (
-  echo Database not found: backend\data\kol_crm.db
+set PYTHON_CMD=python
+if exist backend\.venv\Scripts\python.exe set PYTHON_CMD=backend\.venv\Scripts\python.exe
+
+%PYTHON_CMD% scripts\backup_database.py
+if errorlevel 1 (
+  echo.
+  echo Backup failed. The original database was not changed.
   pause
   exit /b 1
 )
 
-if not exist backups mkdir backups
-for /f %%a in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HHmmss"') do set STAMP=%%a
-set TARGET=backups\kol_crm_backup_%STAMP%.db
-
-copy backend\data\kol_crm.db "%TARGET%" >nul
-echo Backup created:
-echo %CD%\%TARGET%
+echo.
+echo Backup completed. It is safe to keep using CRM while this backup is created.
 pause

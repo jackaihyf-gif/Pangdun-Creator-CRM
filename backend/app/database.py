@@ -115,10 +115,12 @@ def apply_compat_migrations() -> None:
             additions = {
                 "is_archived": "BOOLEAN DEFAULT 0",
                 "archived_at": "DATETIME",
+                "collaboration_tag": "VARCHAR(120) DEFAULT '#MAXSUN'",
             }
             for name, definition in additions.items():
                 if name not in columns:
                     connection.execute(text(f"ALTER TABLE projects ADD COLUMN {name} {definition}"))
+            connection.execute(text("UPDATE projects SET collaboration_tag = '#MAXSUN' WHERE collaboration_tag IS NULL OR TRIM(collaboration_tag) = ''"))
         if "deliverables" in tables:
             columns = {column["name"] for column in inspector.get_columns("deliverables")}
             if "impressions" not in columns:

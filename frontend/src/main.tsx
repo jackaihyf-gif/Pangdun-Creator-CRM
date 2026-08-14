@@ -12,7 +12,7 @@ type ProfileLink = { platform: string; url: string; followers_k?: number | null;
 type Media = { id: number; name: string; country?: string; country_code?: string; region?: string; category?: string; platform_type?: string; website_url?: string; profile_links?: ProfileLink[]; followers_or_traffic?: number | null; audience_metric_type?: string; audience_metric_unit?: string; metric_source?: string; metric_verified_at?: string; data_source?: string; data_capture_method?: string; data_confidence?: number | null; last_verified_at?: string; review_snoozed_until?: string; media_tier?: string | null; cooperation_status?: string; verification_status?: string; notes?: string };
 type ShippingAddress = { id: number; media_id: number; contact_id?: number | null; recipient_name?: string; phone?: string; email?: string; address_text: string; city?: string; region?: string; postal_code?: string; country?: string; tax_or_customs_number?: string; shipping_notes?: string; source_text?: string; is_default: boolean; is_confirmed: boolean };
 type AgentRun = { id: number; input_type: string; source_label?: string; status: string; model?: string; proposal?: any; usage?: any; error_message?: string; target_media_id?: number | null; user?: string; reviewed_by?: string; created_at: string; reviewed_at?: string };
-type Project = { id: number; name: string; project_code?: string; owner_id?: number; status: string; budget_amount?: number; budget_currency?: string; actual_amount?: number; campaign_count?: number; owner?: User; objective?: string; notes?: string; start_date?: string; end_date?: string; is_archived?: boolean; archived_at?: string };
+type Project = { id: number; name: string; project_code?: string; owner_id?: number; status: string; budget_amount?: number; budget_currency?: string; collaboration_tag?: string; actual_amount?: number; campaign_count?: number; owner?: User; objective?: string; notes?: string; start_date?: string; end_date?: string; is_archived?: boolean; archived_at?: string };
 type WorkflowHealth = 'ready' | 'overdue' | 'missing_action' | 'missing_date' | 'missing_both' | 'needs_next_step' | 'closed';
 type Collaboration = { id: number; project_id?: number; media_id: number; owner_id?: number; collaboration_type?: string; execution_status: string; execution_status_changed_at?: string; days_in_status?: number; expected_publish_date?: string; next_action?: string; follow_up_date?: string; follow_up_priority?: string; follow_up_done?: boolean; workflow_health?: WorkflowHealth; workflow_label?: string; workflow_warnings?: string[]; next_status?: string | null; advance_ready?: boolean; advance_blockers?: string[]; advance_requirements?: string[]; notes?: string; project?: Project; media?: Media; owner?: User; shipments?: any[]; cost_items?: any[]; deliverables?: any[]; activities?: any[] };
 
@@ -106,10 +106,10 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
 
 function Shell({ user, view, setView, onLogout }: { user: User; view: View; setView: (view: View) => void; onLogout: () => void }) {
   const workspaceNav: Array<[View, string, React.ReactNode]> = [['workbench', '合作执行', <LayoutDashboard size={18} strokeWidth={1.75} />], ['projects', '项目管理', <Megaphone size={18} strokeWidth={1.75} />], ['archive', '历史归档', <Archive size={18} strokeWidth={1.75} />], ['agent', '胖墩 Agent', <Bot size={18} strokeWidth={1.75} />]];
-  const resourceNav: Array<[View, string, React.ReactNode]> = [['media', '媒体 / KOL', <Users size={18} strokeWidth={1.75} />], ['products', '产品库', <Boxes size={18} strokeWidth={1.75} />], ['import', '费用表导入', <FileSpreadsheet size={18} strokeWidth={1.75} />], ...(user.role === 'Admin' ? [['users', '用户管理', <UserCog size={18} strokeWidth={1.75} />] as [View, string, React.ReactNode]] : [])];
+  const resourceNav: Array<[View, string, React.ReactNode]> = [['media', '媒体 / KOL', <Users size={18} strokeWidth={1.75} />], ['products', '产品库', <Boxes size={18} strokeWidth={1.75} />], ['import', '统一导入', <FileSpreadsheet size={18} strokeWidth={1.75} />], ...(user.role === 'Admin' ? [['users', '用户管理', <UserCog size={18} strokeWidth={1.75} />] as [View, string, React.ReactNode]] : [])];
   const renderNav = (items: Array<[View, string, React.ReactNode]>) => items.map(([key, label, icon]) => <button key={key} className={view === key ? 'active' : ''} onClick={() => { setView(key); window.scrollTo({ top: 0 }); }}>{icon}<span>{label}</span></button>);
   const logout = async () => { await api('/api/auth/logout', { method: 'POST' }); onLogout(); };
-  return <div className="app-shell"><aside className="sidebar"><div className="brand"><img src="/assets/pangdun/pangdun.png" alt="Pangdun" /><div><strong>Pangdun CRM</strong><span>KOL Collaboration OS</span></div></div><nav><div className="nav-group"><span className="nav-label">应用中心</span>{renderNav(workspaceNav)}</div><div className="nav-group"><span className="nav-label">资源与数据</span>{renderNav(resourceNav)}</div></nav><button className="logout" onClick={logout}><LogOut size={18} />退出登录</button></aside><main className="content"><header className="account-bar"><div className="account-button"><span className="account-avatar">{user.name.slice(0, 1).toUpperCase()}</span><strong>{user.name}</strong></div></header><div className="page-stage">{view === 'workbench' && <Execution canEdit={user.role !== 'Viewer'} canManage={user.role === 'Admin'} />}{view === 'projects' && <Projects canEdit={user.role !== 'Viewer'} canManage={user.role === 'Admin'} />}{view === 'archive' && <ArchiveManager canManage={user.role === 'Admin'} />}{view === 'agent' && <AgentWorkspace canEdit={user.role !== 'Viewer'} />}{view === 'media' && <Library type="media" canEdit={user.role !== 'Viewer'} canManage={user.role === 'Admin'} />}{view === 'products' && <Library type="products" canEdit={user.role !== 'Viewer'} canManage={user.role === 'Admin'} />}{view === 'import' && <ExecutionImport />}{view === 'users' && <UsersPage />}</div></main></div>;
+  return <div className="app-shell"><aside className="sidebar"><div className="brand"><img src="/assets/pangdun/pangdun.png" alt="Pangdun" /><div><strong>Pangdun CRM</strong><span>KOL Collaboration OS</span></div></div><nav><div className="nav-group"><span className="nav-label">应用中心</span>{renderNav(workspaceNav)}</div><div className="nav-group"><span className="nav-label">资源与数据</span>{renderNav(resourceNav)}</div></nav><button className="logout" onClick={logout}><LogOut size={18} />退出登录</button></aside><main className="content"><header className="account-bar"><div className="account-button"><span className="account-avatar">{user.name.slice(0, 1).toUpperCase()}</span><strong>{user.name}</strong></div></header><div className="page-stage">{view === 'workbench' && <Execution canEdit={user.role !== 'Viewer'} canManage={user.role === 'Admin'} />}{view === 'projects' && <Projects canEdit={user.role !== 'Viewer'} canManage={user.role === 'Admin'} />}{view === 'archive' && <ArchiveManager canManage={user.role === 'Admin'} />}{view === 'agent' && <AgentWorkspace canEdit={user.role !== 'Viewer'} canManage={user.role === 'Admin'} />}{view === 'media' && <Library type="media" canEdit={user.role !== 'Viewer'} canManage={user.role === 'Admin'} />}{view === 'products' && <Library type="products" canEdit={user.role !== 'Viewer'} canManage={user.role === 'Admin'} />}{view === 'import' && <ExecutionImport />}{view === 'users' && <UsersPage />}</div></main></div>;
 }
 
 function PageHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: React.ReactNode }) { return <header className="page-header"><div><Title color="app-teal">{title}</Title>{subtitle && <p>{subtitle}</p>}</div>{action}</header>; }
@@ -174,7 +174,7 @@ function Projects({ canEdit, canManage }: { canEdit: boolean; canManage: boolean
   return <section className="resource-page"><PageHeader title="项目管理" subtitle="从项目维度查看合作进度、负责人和预算使用情况" action={canEdit && <Button type="primary" icon={<Plus size={16} />} onClick={newProject}>新建项目</Button>} /><div className="resource-summary-grid"><div><span>进行中项目</span><strong>{items.filter((item) => item.status === 'Active').length}</strong></div><div><span>合作执行单</span><strong>{campaignsTotal}</strong></div><div><span>预算使用</span><strong>{budgetTotal ? `${Math.round(actualTotal / budgetTotal * 100)}%` : '—'}</strong><small>{budgetTotal ? `¥${actualTotal.toLocaleString()} / ¥${budgetTotal.toLocaleString()}` : '尚未录入预算'}</small></div></div><div className="resource-toolbar"><div className="resource-tabs" role="tablist">{[{ key: '', label: '全部' }, { key: 'Active', label: '进行中' }, { key: 'Paused', label: '已暂停' }, { key: 'Completed', label: '已完成' }].map((option) => <button key={option.key} type="button" className={statusFilter === option.key ? 'active' : ''} onClick={() => setStatusFilter(option.key)}>{option.label}<span>{option.key ? items.filter((item) => item.status === option.key).length : items.length}</span></button>)}</div><div className="resource-filters"><label className="resource-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目名称或 OA / PI" /></label><Select compact ariaLabel="按负责人筛选" value={ownerFilter} onChange={setOwnerFilter} options={users.map((user) => ({ value: String(user.id), label: user.name }))} placeholder="全部负责人" /></div></div><DataTable data={visibleItems} columns={[{ title: '项目', render: (_: any, r: Project) => <button className="primary-cell primary-cell-button" onClick={() => setSelected(r.id)}><strong>{r.name}</strong><span>{r.project_code || '未填写 OA / PI'}{r.end_date ? ` · 截止 ${r.end_date}` : ''}</span></button>, width: 250 }, { title: '状态', render: (_: any, r: Project) => <StatusTag value={statusLabel[r.status] || r.status} />, width: 100 }, { title: '负责人', render: (_: any, r: Project) => r.owner?.name || '未分配', width: 105 }, { title: '合作进度', render: (_: any, r: Project) => <div className="primary-cell"><strong>{r.campaign_count || 0} 个执行单</strong><span>{r.objective || '未填写项目目标'}</span></div>, width: 210 }, { title: '预算 / 实付', render: (_: any, r: Project) => <div className="primary-cell"><strong>{r.budget_amount == null ? '未设置预算' : `${r.budget_currency || 'CNY'} ${Number(r.budget_amount).toLocaleString()}`}</strong><span>实付 ¥{Number(r.actual_amount || 0).toLocaleString()}</span></div>, width: 150 }, ...(canEdit ? [{ title: '管理', render: (_: any, r: Project) => <button className="table-action" title="编辑项目信息" onClick={() => setEditing({ ...r, owner_id: r.owner_id || r.owner?.id })}><Pencil size={16} />编辑</button>, width: 80 }] : [])]} />{editing && <Dialog title={editing.id ? '编辑项目信息' : '新建推广项目'} onClose={() => setEditing(null)} onOk={() => void save()} footerStart={canManage && editing.id ? <div className="row-actions"><button className="table-action" onClick={() => void archiveProject()}><Archive size={15} />归档</button><Popover trigger={<Button icon={<MoreHorizontal size={16} />}>更多</Button>} align="start"><div className="record-action-menu"><button className="record-action-menu-danger" onClick={() => void deleteProject()}>永久删除<span>同时删除项目内执行数据</span></button></div></Popover></div> : undefined}><ProjectForm value={editing} users={users} setValue={setEditing} /></Dialog>}</section>;
 }
 
-function ProjectForm({ value, users, setValue }: { value: Partial<Project>; users: User[]; setValue: (value: Partial<Project>) => void }) { const set = (key: keyof Project, raw: any) => setValue({ ...value, [key]: raw }); return <div className="form-grid"><label>项目名称<Input value={value.name || ''} onChange={(e) => set('name', e.target.value)} /></label><label>项目编号 / OA PI<Input value={value.project_code || ''} onChange={(e) => set('project_code', e.target.value)} /></label><label>负责人<SelectField value={value.owner_id} onChange={(ownerId) => set('owner_id', ownerId ? Number(ownerId) : undefined)} options={users.map((user) => ({ key: String(user.id), label: user.name }))} placeholder="未分配" /></label><label>项目状态<SelectField value={value.status || 'Active'} onChange={(status) => set('status', status)} options={[{ key: 'Active', label: 'Active（进行中）' }, { key: 'Completed', label: 'Completed（已完成）' }, { key: 'Paused', label: 'Paused（已暂停）' }]} /></label><label>开始日期<Input type="date" value={value.start_date || ''} onChange={(e) => set('start_date', e.target.value || null)} /></label><label>结束日期<Input type="date" value={value.end_date || ''} onChange={(e) => set('end_date', e.target.value || null)} /></label><label>预算金额<Input type="number" value={value.budget_amount ?? ''} onChange={(e) => set('budget_amount', e.target.value ? Number(e.target.value) : null)} /></label><label>币种<Input value={value.budget_currency || 'CNY'} onChange={(e) => set('budget_currency', e.target.value)} /></label><label className="wide">项目目标<textarea value={value.objective || ''} onChange={(e) => set('objective', e.target.value)} /></label><label className="wide">项目备注<textarea value={value.notes || ''} onChange={(e) => set('notes', e.target.value)} /></label></div>; }
+function ProjectForm({ value, users, setValue }: { value: Partial<Project>; users: User[]; setValue: (value: Partial<Project>) => void }) { const set = (key: keyof Project, raw: any) => setValue({ ...value, [key]: raw }); return <div className="form-grid"><label>项目名称<Input value={value.name || ''} onChange={(e) => set('name', e.target.value)} /></label><label>项目编号 / OA PI<Input value={value.project_code || ''} onChange={(e) => set('project_code', e.target.value)} /></label><label>负责人<SelectField value={value.owner_id} onChange={(ownerId) => set('owner_id', ownerId ? Number(ownerId) : undefined)} options={users.map((user) => ({ key: String(user.id), label: user.name }))} placeholder="未分配" /></label><label>项目状态<SelectField value={value.status || 'Active'} onChange={(status) => set('status', status)} options={[{ key: 'Active', label: 'Active（进行中）' }, { key: 'Completed', label: 'Completed（已完成）' }, { key: 'Paused', label: 'Paused（已暂停）' }]} /></label><label>开始日期<Input type="date" value={value.start_date || ''} onChange={(e) => set('start_date', e.target.value || null)} /></label><label>结束日期<Input type="date" value={value.end_date || ''} onChange={(e) => set('end_date', e.target.value || null)} /></label><label>预算金额<Input type="number" value={value.budget_amount ?? ''} onChange={(e) => set('budget_amount', e.target.value ? Number(e.target.value) : null)} /></label><label>币种<Input value={value.budget_currency || 'CNY'} onChange={(e) => set('budget_currency', e.target.value)} /></label><label className="wide project-tag-field">内容识别 Tag<Input value={value.collaboration_tag || '#MAXSUN'} onChange={(e) => set('collaboration_tag', e.target.value)} onBlur={(e) => set('collaboration_tag', e.target.value.trim().startsWith('#') ? e.target.value.trim() : `#${e.target.value.trim()}`)} /><span className="field-hint">YouTube 视频 Description 必须包含这个完整 Tag；修改后下一轮扫描立即使用。</span></label><label className="wide">项目目标<textarea value={value.objective || ''} onChange={(e) => set('objective', e.target.value)} /></label><label className="wide">项目备注<textarea value={value.notes || ''} onChange={(e) => set('notes', e.target.value)} /></label></div>; }
 
 function ProjectDetail({ id, onBack, canEdit, canManage }: { id: number; onBack: () => void; canEdit: boolean; canManage: boolean }) {
   const [data, setData] = useState<any>(null); const [loading, setLoading] = useState(true); const [loadError, setLoadError] = useState(''); const [kind, setKind] = useState<'shipment' | 'cost' | 'content' | 'activity' | null>(null); const [editing, setEditing] = useState<Partial<Project> | null>(null); const [editingCollaboration, setEditingCollaboration] = useState<Collaboration | null>(null); const [users, setUsers] = useState<User[]>([]);
@@ -667,8 +667,8 @@ const agentFieldLabels: Record<string, string> = {
   role: '联系人职位', email: '联系人邮箱', phone: '联系人电话', whatsapp: 'WhatsApp', telegram: 'Telegram',
 };
 
-function AgentWorkspace({ canEdit }: { canEdit: boolean }) {
-  const [status, setStatus] = useState<any>(null); const [runs, setRuns] = useState<AgentRun[]>([]); const [media, setMedia] = useState<Media[]>([]); const [inputType, setInputType] = useState<'url' | 'text'>('url'); const [content, setContent] = useState(''); const [sourceLabel, setSourceLabel] = useState(''); const [working, setWorking] = useState(false); const [active, setActive] = useState<AgentRun | null>(null); const [selected, setSelected] = useState<Set<string>>(new Set()); const [targetMediaId, setTargetMediaId] = useState<number | null>(null); const [createMedia, setCreateMedia] = useState(false);
+function AgentWorkspace({ canEdit, canManage }: { canEdit: boolean; canManage: boolean }) {
+  const [status, setStatus] = useState<any>(null); const [runs, setRuns] = useState<AgentRun[]>([]); const [media, setMedia] = useState<Media[]>([]); const [inputType, setInputType] = useState<'url' | 'text'>('url'); const [content, setContent] = useState(''); const [sourceLabel, setSourceLabel] = useState(''); const [working, setWorking] = useState(false); const [testingProvider, setTestingProvider] = useState<string | null>(null); const [active, setActive] = useState<AgentRun | null>(null); const [selected, setSelected] = useState<Set<string>>(new Set()); const [targetMediaId, setTargetMediaId] = useState<number | null>(null); const [createMedia, setCreateMedia] = useState(false);
   const load = async () => { const [config, history, mediaRows] = await Promise.all([api<any>('/api/agent/status'), api<{ items: AgentRun[] }>('/api/agent/runs'), api<{ items: Media[] }>('/api/media?page_size=500')]); setStatus(config); setRuns(history.items); setMedia(mediaRows.items); };
   useEffect(() => { void load(); }, []);
   const proposalFields = (run: AgentRun) => { const proposal = run.proposal || {}; const rows: Array<{ path: string; label: string; value: any; evidence?: string; confidence: number }> = []; Object.entries(proposal.media || {}).forEach(([key, value]) => { if (value == null || value === '' || (Array.isArray(value) && !value.length)) return; const path = `media.${key}`; rows.push({ path, label: agentFieldLabels[key] || key, value, evidence: proposal.evidence?.[path], confidence: Number(proposal.confidence?.[path] ?? .49) }); }); (proposal.contacts || []).forEach((contact: any, index: number) => Object.entries(contact).forEach(([key, value]) => { if (value == null || value === '') return; const path = `contacts.${index}.${key}`; rows.push({ path, label: `${index + 1} 号联系人 · ${agentFieldLabels[key] || (key === 'name' ? '姓名' : key)}`, value, evidence: proposal.evidence?.[path], confidence: Number(proposal.confidence?.[path] ?? .49) }); })); return rows; };
@@ -676,10 +676,14 @@ function AgentWorkspace({ canEdit }: { canEdit: boolean }) {
   const extract = async () => { if (!canEdit || working) return; setWorking(true); try { const run = await api<AgentRun>('/api/agent/extract', { method: 'POST', body: JSON.stringify({ input_type: inputType, content, source_label: sourceLabel || null }) }); setContent(''); setSourceLabel(''); await load(); openRun(run); Notification.success({ message: 'Agent 已生成字段建议', description: '高置信度字段已预选，仍需你确认后才会写入。' }); } catch (error) { Notification.error({ message: 'Agent 提取失败', description: String(error) }); } finally { setWorking(false); } };
   const apply = async () => { if (!active || !selected.size) return; setWorking(true); try { const result = await api<any>(`/api/agent/runs/${active.id}/apply`, { method: 'POST', body: JSON.stringify({ selected_fields: [...selected], target_media_id: createMedia ? null : targetMediaId, create_media: createMedia }) }); setActive(null); await load(); Notification.success({ message: `已写入 ${result.media.name}`, description: result.contacts_created ? `同时创建 ${result.contacts_created} 个联系人` : '本次未创建联系人' }); } catch (error) { Notification.error({ message: '写入失败', description: String(error) }); } finally { setWorking(false); } };
   const reject = async () => { if (!active || !await confirmAction('拒绝这份 Agent 建议？记录会保留，但不会写入任何媒体资料。')) return; await api(`/api/agent/runs/${active.id}/reject`, { method: 'POST', body: JSON.stringify({ reason: '人工核对后不采用' }) }); setActive(null); await load(); };
+  const testConnection = async (provider: 'deepseek' | 'youtube') => { if (!canManage || testingProvider) return; setTestingProvider(provider); try { const result = await api<any>(`/api/integrations/${provider}/test`, { method: 'POST' }); await load(); result.ok ? Notification.success({ message: '连接测试成功', description: result.message }) : Notification.error({ message: '连接测试失败', description: result.message }); } catch (error) { Notification.error({ message: '连接测试失败', description: String(error) }); } finally { setTestingProvider(null); } };
+  const connectionLabel = (configured: boolean, lastTest: any) => !configured ? '未连接' : lastTest?.status === 'connected' ? '已连接' : lastTest?.status === 'failed' ? '连接异常' : '待测试';
   const formatAgentValue = (value: any) => Array.isArray(value) ? value.map((item) => item.url || item.name || JSON.stringify(item)).join('；') : String(value);
-  return <section className="resource-page agent-page"><PageHeader title="胖墩 Agent" subtitle="从主页、Media Kit、邮件与表格文字提取档案；所有写入必须人工确认" action={<div className={`agent-provider ${status?.configured ? 'ready' : ''}`}><span>{status?.configured ? '已连接' : '待配置'}</span><strong>{status?.model || 'deepseek-v4-flash'}</strong></div>} />
-    {!status?.configured && <div className="agent-setup"><ShieldCheck size={21} /><div><strong>先配置 DeepSeek API Key</strong><span>复制 <code>backend/agent.env.example</code> 到 <code>backend/data/agent.env</code>，填入密钥后重启 CRM。密钥只由后端读取，不会发送到浏览器、写入数据库或提交到 Git。</span></div></div>}
-    {status?.configured && !status?.youtube?.configured && <div className="agent-setup"><ShieldCheck size={21} /><div><strong>YouTube 官方数据尚未连接</strong><span>在 <code>backend/data/agent.env</code> 增加 <code>YOUTUBE_API_KEY</code> 并重启 CRM；其他网页和粘贴文本仍可正常使用。</span></div></div>}
+  return <section className="resource-page agent-page"><PageHeader title="胖墩 Agent" subtitle="从主页、Media Kit、邮件与表格文字提取档案；所有写入必须人工确认" />
+    <div className="integration-status-grid">
+      {[{ key: 'deepseek' as const, title: 'DeepSeek Agent', detail: status?.model || 'deepseek-v4-flash', configured: Boolean(status?.configured), lastTest: status?.last_test }, { key: 'youtube' as const, title: 'YouTube 数据', detail: status?.youtube?.provider || 'YouTube Data API v3', configured: Boolean(status?.youtube?.configured), lastTest: status?.youtube?.last_test }].map((item) => <article key={item.key} className={`integration-status-card ${item.lastTest?.status || (item.configured ? 'pending' : 'disconnected')}`}><div className="integration-status-icon">{item.lastTest?.status === 'connected' ? <CheckCircle2 size={20} /> : <ShieldCheck size={20} />}</div><div className="integration-status-copy"><header><strong>{item.title}</strong><Tag color={item.lastTest?.status === 'connected' ? 'app-teal' : undefined}>{connectionLabel(item.configured, item.lastTest)}</Tag></header><span>{item.detail}</span><small>最近测试：{item.lastTest?.tested_at ? formatDateTime(item.lastTest.tested_at) : '尚未测试'}{item.lastTest?.message ? ` · ${item.lastTest.message}` : ''}</small></div>{canManage && <Button icon={<RefreshCw size={15} />} disabled={!item.configured || Boolean(testingProvider)} onClick={() => void testConnection(item.key)}>{testingProvider === item.key ? '测试中…' : '测试连接'}</Button>}</article>)}
+    </div>
+    {(!status?.configured || !status?.youtube?.configured) && <div className="agent-setup"><ShieldCheck size={21} /><div><strong>在本机配置缺少的服务</strong><span>复制 <code>backend/agent.env.example</code> 为 <code>backend/data/agent.env</code>，填写 {!status?.configured && <code>DEEPSEEK_API_KEY</code>} {!status?.configured && !status?.youtube?.configured && '和 '} {!status?.youtube?.configured && <code>YOUTUBE_API_KEY</code>}，然后重启 CRM 生效。网页不会读取、显示或修改密钥。</span></div></div>}
     <div className="agent-layout"><section className="agent-composer"><header><div><Sparkles size={18} /><strong>提取媒体档案</strong></div><span>不会自动写入</span></header><div className="agent-source-tabs"><button className={inputType === 'url' ? 'active' : ''} onClick={() => setInputType('url')}><Link2 size={15} />网页 URL</button><button className={inputType === 'text' ? 'active' : ''} onClick={() => setInputType('text')}><ClipboardList size={15} />粘贴文字</button></div><label>来源名称（可选）<Input value={sourceLabel} onChange={(event) => setSourceLabel(event.target.value)} placeholder="例如：2026 Media Kit 或商务邮件" /></label>{inputType === 'url' ? <label>媒体主页或公开页面<Input value={content} onChange={(event) => setContent(event.target.value)} placeholder="https://..." /></label> : <label>Media Kit、邮件或表格文字<textarea value={content} onChange={(event) => setContent(event.target.value)} placeholder="粘贴需要提取的原文；请先移除与 CRM 无关的敏感信息。" /></label>}<footer><span>网页只读取公开文字；不支持登录页面和内网地址</span><Button type="primary" icon={<Sparkles size={15} />} disabled={!canEdit || !status?.configured || content.trim().length < 10 || working} onClick={() => void extract()}>{working ? '正在分析…' : '生成审核预览'}</Button></footer></section><aside className="agent-guardrails"><img src="/assets/pangdun/pangdun_think.png" alt="" /><strong>Agent 能做什么</strong><ul><li>提取名称、国家、渠道与主页</li><li>识别粉丝量、流量和联系人</li><li>显示每个字段的证据与置信度</li><li>匹配 CRM 中已有媒体</li></ul><strong>Agent 不能做什么</strong><ul><li>不能静默修改或删除数据</li><li>不能绕过重复与字典校验</li><li>不能自动发送邮件</li></ul></aside></div>
     <div className="resource-section-heading"><div><h3>最近任务</h3><p>建议、采用、拒绝与失败记录都会保留。</p></div><span>{runs.length} 条</span></div><DataTable data={runs} columns={[{ title: '来源', render: (_: any, row: AgentRun) => <div className="primary-cell"><strong>{row.source_label || '未命名来源'}</strong><span>{row.input_type === 'url' ? '公开网页' : '粘贴文本'} · {formatDateTime(row.created_at)}</span></div>, width: 310 }, { title: '模型', dataIndex: 'model', width: 170 }, { title: '状态', render: (_: any, row: AgentRun) => <Tag color={row.status === 'applied' ? 'app-teal' : undefined}>{({ proposed: '待确认', applied: '已采用', rejected: '已拒绝', failed: '失败', processing: '分析中' } as any)[row.status] || row.status}</Tag>, width: 110 }, { title: '摘要', render: (_: any, row: AgentRun) => row.proposal?.summary || row.error_message || '—', width: 310 }, { title: '管理', render: (_: any, row: AgentRun) => <button className="table-action" onClick={() => openRun(row)}>{row.status === 'proposed' ? '审核建议' : '查看'}</button>, width: 100 }]} />
     {active && <Dialog title={`Agent 审核 · ${active.source_label || `任务 ${active.id}`}`} onClose={() => setActive(null)} footerStart={active.status === 'proposed' ? <Button onClick={() => void reject()}>拒绝建议</Button> : undefined} onOk={active.status === 'proposed' ? () => void apply() : undefined} okLabel={working ? '写入中…' : `确认写入 ${selected.size} 项`}><div className="agent-review"><header><div><Bot size={22} /><div><strong>{active.proposal?.summary || 'Agent 任务记录'}</strong><span>{active.model} · {active.usage?.total_tokens ? `${active.usage.total_tokens} tokens` : '用量未返回'}</span></div></div>{active.proposal?.warnings?.length > 0 && <Tag>{active.proposal.warnings.length} 条提醒</Tag>}</header>{active.proposal?.warnings?.length > 0 && <div className="agent-warnings">{active.proposal.warnings.map((warning: string, index: number) => <span key={index}>{warning}</span>)}</div>}{active.status === 'proposed' && <div className="agent-target"><label><input type="radio" checked={!createMedia} onChange={() => setCreateMedia(false)} />写入现有媒体</label><EntityLookup value={targetMediaId} onChange={setTargetMediaId} options={mediaLookupOptions(media)} placeholder="搜索名称、国家、渠道或主页" /><label><input type="radio" checked={createMedia} onChange={() => { setCreateMedia(true); setTargetMediaId(null); }} />创建新媒体</label></div>}<div className="agent-field-list">{proposalFields(active).map((row) => <label key={row.path} className={row.confidence < .8 ? 'low-confidence' : ''}><input type="checkbox" disabled={active.status !== 'proposed'} checked={selected.has(row.path)} onChange={() => setSelected((current) => { const next = new Set(current); next.has(row.path) ? next.delete(row.path) : next.add(row.path); return next; })} /><div><header><strong>{row.label}</strong><span>{Math.round(row.confidence * 100)}%</span></header><p>{formatAgentValue(row.value)}</p><small>{row.evidence || '模型未提供原文证据，需人工核对'}</small></div></label>)}</div></div></Dialog>}
@@ -706,14 +710,380 @@ function UsersPage() {
   return <section className="resource-page"><PageHeader title="用户管理" subtitle="为小团队分配清晰、克制的访问权限" action={<Button type="primary" icon={<UserPlus size={16} />} onClick={() => setForm({ name: '', email: '', password: '', role: 'Editor', is_active: true })}>添加成员</Button>} /><div className="role-guide"><ShieldCheck size={22} /><div><strong>三种角色，一眼就够</strong><span><b>管理员</b>可管理成员和永久删除；<b>编辑者</b>负责日常录入与推进；<b>查看者</b>只能浏览。</span></div><small>当前 {items.length} 人</small></div><DataTable data={items} columns={[{ title: '成员', render: (_: any, row: User) => <div className="member-cell"><span>{row.name.slice(0, 1).toUpperCase()}</span><div><strong>{row.name}</strong><small>{row.email}</small></div></div>, width: 320 }, { title: '角色', render: (_: any, row: User) => <div className="primary-cell"><strong>{roleLabel[row.role]}</strong><span>{row.role === 'Admin' ? '成员管理与全部数据权限' : row.role === 'Editor' ? '新增、编辑和推进合作' : '仅查看 CRM 数据'}</span></div>, width: 290 }, { title: '账号状态', render: (_: any, row: User) => <Tag color={row.is_active === false ? undefined : 'app-teal'}>{row.is_active === false ? '已停用' : '正常'}</Tag>, width: 120 }, { title: '管理', render: (_: any, row: User) => <button className="table-action" onClick={() => setForm({ ...row, password: '' })}><UserCog size={16} />管理</button>, width: 100 }]} />{form && <Dialog variant="modal" title={form.id ? `管理成员 · ${form.name}` : '添加团队成员'} onClose={() => setForm(null)} onOk={() => void save()}><div className="form-grid"><label>姓名<Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label><label>角色<SelectField value={form.role} onChange={(role) => setForm({ ...form, role })} options={[{ key: 'Admin', label: '管理员（全部权限）' }, { key: 'Editor', label: '编辑者（日常协作）' }, { key: 'Viewer', label: '查看者（只读）' }]} /></label><label className="wide">邮箱<Input type="email" value={form.email} disabled={Boolean(form.id)} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="name@example.com" /></label><label>{form.id ? '重置密码（可选）' : '初始密码'}<Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={form.id ? '留空则保持不变' : '至少 8 位'} /></label>{form.id && <label>账号状态<SelectField value={form.is_active === false ? 'disabled' : 'active'} onChange={(value) => setForm({ ...form, is_active: value === 'active' })} options={[{ key: 'active', label: '正常' }, { key: 'disabled', label: '停用' }]} /></label>}</div></Dialog>}</section>;
 }
 
-function ExecutionImport() {
-  const [file, setFile] = useState<File | null>(null); const [preview, setPreview] = useState<any>(null); const [batches, setBatches] = useState<any[]>([]); const [dragging, setDragging] = useState(false); const fileInputRef = useRef<HTMLInputElement>(null);
-  const loadBatches = () => api<any>('/api/import-batches').then((result) => setBatches(result.items || []));
-  useEffect(() => { void loadBatches(); }, []);
-  const send = async (mode: 'preview' | 'confirm') => { if (!file) return Notification.error({ message: '请选择费用统计表' }); const body = new FormData(); body.append('file', file); try { const result = await api<any>(`/api/execution-import/${mode}`, { method: 'POST', body }); setPreview(result); if (mode === 'confirm') { Notification.success({ message: `处理 ${result.success_count} 条：新增 ${result.created_count || 0}、更新 ${result.updated_count || 0}、跳过 ${result.unchanged_count || 0}` }); await loadBatches(); } } catch (e) { Notification.error({ message: '导入失败', description: String(e) }); } };
-  const undo = async (batch: any) => { if (!await confirmAction(`撤销导入批次“${batch.filename || batch.id}”？\n\n本批新增的记录会删除，被导入更新的字段会恢复。`)) return; try { const result = await api<any>(`/api/import-batches/${batch.id}/undo`, { method: 'POST' }); Notification.success({ message: `已撤销：删除 ${result.removed} 条，恢复 ${result.restored} 处` }); await loadBatches(); } catch (error) { Notification.error({ message: '撤销失败', description: String(error) }); } };
-  const chooseFile = (next: File | null) => { setFile(next); setPreview(null); };
-  return <section className="resource-page import-page"><PageHeader title="费用导入" subtitle="先上传、再预览，确认数据无误后才写入 CRM" /><ol className="import-steps"><li className={file ? 'done' : 'active'}><span>{file ? '✓' : '1'}</span><div><strong>上传文件</strong><small>选择费用执行表</small></div></li><li className={file && !preview ? 'active' : preview ? 'done' : ''}><span>{preview ? '✓' : '2'}</span><div><strong>审核预览</strong><small>检查新增、更新与冲突</small></div></li><li className={preview ? 'active' : ''}><span>3</span><div><strong>确认写入</strong><small>生成可撤销导入批次</small></div></li></ol><div className="import-workspace"><div className={`import-dropzone ${dragging ? 'dragging' : ''} ${file ? 'has-file' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files?.[0] || null); }}><input ref={fileInputRef} className="visually-hidden" type="file" accept=".xlsx" onChange={(event) => chooseFile(event.target.files?.[0] || null)} />{file ? <><FileSpreadsheet size={34} /><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB · 等待审核预览</span><Button onClick={() => fileInputRef.current?.click()}>更换文件</Button></> : <><UploadCloud size={36} /><strong>拖入费用执行表，或从电脑选择</strong><span>当前支持 .xlsx；文件只会在预览或确认时上传</span><Button onClick={() => fileInputRef.current?.click()}>选择文件</Button></>}</div><aside className="import-guidance"><strong>导入前检查</strong><ul><li>项目编号和合作对象用于定位记录</li><li>重复执行不会重复创建数据</li><li>所有修改先在预览中标明</li><li>确认导入后仍可按批次撤销</li></ul></aside></div><div className="import-actions"><Button disabled={!file} onClick={() => void send('preview')}>生成审核预览</Button><Button type="primary" disabled={!preview?.rows} onClick={() => void send('confirm')}>确认导入 {preview?.total ? `${preview.total} 条` : ''}</Button></div>{preview?.rows && <section className="import-preview"><div className="import-summary"><div><strong>审核预览 · {preview.total} 条记录</strong><span>确认前重点检查“需确认”列</span></div><div><b>新增 {preview.created_count || 0}</b><b>更新 {preview.updated_count || 0}</b><b>跳过 {preview.unchanged_count || 0}</b><b className={preview.conflict_count ? 'warning-text' : ''}>需确认 {preview.conflict_count || 0}</b></div></div><DataTable data={preview.rows} columns={[{ title: '行', dataIndex: 'row_number', width: 70 }, { title: '导入动作', render: (_: any, row: any) => <Tag color={row.import_action === '新增' ? 'app-teal' : undefined}>{row.import_action || '已处理'}</Tag>, width: 110 }, { title: '项目编号', dataIndex: 'project_code', width: 150 }, { title: '合作对象', dataIndex: 'media_name', width: 180 }, { title: '执行状态', render: (_: any, row: any) => <StatusTag value={row.execution_status} />, width: 140 }, { title: '产品', dataIndex: 'product_bundle', width: 230 }, { title: '物流单号', dataIndex: 'tracking_number', width: 160 }, { title: '需确认', render: (_: any, row: any) => row.warnings?.join('；') || '无', width: 240 }]} /></section>}<div className="resource-section-heading"><div><h3>导入批次</h3><p>每次确认导入都会留下独立记录，可以安全撤销。</p></div><span>{batches.length} 个批次</span></div><DataTable data={batches} columns={[{ title: '文件', render: (_: any, row: any) => <div className="primary-cell"><strong>{row.filename || `批次 ${row.id}`}</strong><span>{new Date(row.created_at).toLocaleString()}</span></div>, width: 300 }, { title: '类型', render: (_: any, row: any) => row.import_type === 'execution' ? '费用执行表' : '媒体表', width: 140 }, { title: '导入结果', render: (_: any, row: any) => `新增 ${row.summary?.created_count || 0} · 更新 ${row.summary?.updated_count || 0} · 跳过 ${row.summary?.unchanged_count || 0}`, width: 300 }, { title: '状态', render: (_: any, row: any) => <Tag color={row.undone_at ? undefined : 'app-teal'}>{row.undone_at ? '已撤销' : row.status || '已完成'}</Tag>, width: 120 }, { title: '管理', render: (_: any, row: any) => row.undone_at ? '—' : <button className="table-action" onClick={() => void undo(row)}>撤销本批</button>, width: 120 }]} /></section>;
+export function ExecutionImport() {
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<any>(null);
+  const [batches, setBatches] = useState<any[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const loadBatches = () =>
+    api<any>("/api/import-batches").then((result) =>
+      setBatches(result.items || []),
+    );
+  useEffect(() => {
+    void loadBatches();
+  }, []);
+  const generatePreview = async () => {
+    if (!file) return Notification.error({ message: "请选择需要导入的文件" });
+    const body = new FormData();
+    body.append("file", file);
+    setBusy(true);
+    try {
+      const result = await api<any>("/api/universal-import/preview", {
+        method: "POST",
+        body,
+      });
+      setPreview(result);
+      Notification.success({
+        message:
+          result.parser === "local_standard"
+            ? "已按标准模板生成预览"
+            : "Agent 已完成映射，请审核后写入",
+      });
+    } catch (e) {
+      Notification.error({ message: "无法生成预览", description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const downloadTemplate = async () => {
+    try {
+      const response = await fetch("/api/universal-import/template.csv", {
+        credentials: "include",
+      });
+      if (!response.ok)
+        throw new Error((await response.text()) || response.statusText);
+      if (!response.headers.get("content-type")?.includes("text/csv"))
+        throw new Error("服务器返回的不是 CSV 文件，请重启 CRM 后重试");
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "Pangdun_CRM_标准导入模板.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      Notification.success({ message: "标准 CSV 已下载" });
+    } catch (error) {
+      Notification.error({
+        message: "模板下载失败",
+        description: String(error),
+      });
+    }
+  };
+  const confirmImport = async () => {
+    if (!preview?.draft_id) return;
+    setBusy(true);
+    try {
+      const result = await api<any>(
+        `/api/universal-import/${preview.draft_id}/confirm`,
+        { method: "POST" },
+      );
+      Notification.success({
+        message: `处理 ${result.success_count} 条：新增 ${result.created_count || 0}、更新 ${result.updated_count || 0}、跳过 ${result.unchanged_count || 0}`,
+      });
+      setPreview({ ...preview, confirmed: true });
+      await loadBatches();
+    } catch (e) {
+      Notification.error({ message: "导入失败", description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const undo = async (batch: any) => {
+    if (
+      !(await confirmAction(
+        `撤销导入批次“${batch.filename || batch.id}”？\n\n本批新增的记录会删除，被导入更新的字段会恢复。`,
+      ))
+    )
+      return;
+    try {
+      const result = await api<any>(`/api/import-batches/${batch.id}/undo`, {
+        method: "POST",
+      });
+      Notification.success({
+        message: `已撤销：删除 ${result.removed} 条，恢复 ${result.restored} 处`,
+      });
+      await loadBatches();
+    } catch (error) {
+      Notification.error({ message: "撤销失败", description: String(error) });
+    }
+  };
+  const chooseFile = (next: File | null) => {
+    setFile(next);
+    setPreview(null);
+  };
+  return (
+    <section className="resource-page import-page">
+      <PageHeader
+        title="统一导入中心"
+        subtitle="标准模板直接映射；其他表格与文档由 Agent 整理，审核后才写入 CRM"
+        action={
+          <Button
+            icon={<Download size={16} />}
+            onClick={() => void downloadTemplate()}
+          >
+            下载标准 CSV
+          </Button>
+        }
+      />
+      <ol className="import-steps">
+        <li className={file ? "done" : "active"}>
+          <span>{file ? "✓" : "1"}</span>
+          <div>
+            <strong>上传来源</strong>
+            <small>表格或文字文档</small>
+          </div>
+        </li>
+        <li className={file && !preview ? "active" : preview ? "done" : ""}>
+          <span>{preview ? "✓" : "2"}</span>
+          <div>
+            <strong>审核映射</strong>
+            <small>检查新增、更新与冲突</small>
+          </div>
+        </li>
+        <li className={preview?.confirmed ? "done" : preview ? "active" : ""}>
+          <span>{preview?.confirmed ? "✓" : "3"}</span>
+          <div>
+            <strong>确认写入</strong>
+            <small>生成可撤销导入批次</small>
+          </div>
+        </li>
+      </ol>
+      <div className="import-workspace">
+        <div
+          className={`import-dropzone ${dragging ? "dragging" : ""} ${file ? "has-file" : ""}`}
+          onDragEnter={(event) => {
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={(event) => {
+            if (event.currentTarget === event.target) setDragging(false);
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragging(false);
+            chooseFile(event.dataTransfer.files?.[0] || null);
+          }}
+        >
+          <input
+            ref={fileInputRef}
+            className="visually-hidden"
+            type="file"
+            accept=".csv,.xlsx,.pdf,.docx,.txt,.md"
+            onChange={(event) => chooseFile(event.target.files?.[0] || null)}
+          />
+          {file ? (
+            <>
+              <FileSpreadsheet size={34} />
+              <strong>{file.name}</strong>
+              <span>
+                {(file.size / 1024 / 1024).toFixed(2)} MB ·{" "}
+                {preview ? "已生成审核草稿" : "等待解析"}
+              </span>
+              <Button onClick={() => fileInputRef.current?.click()}>
+                更换文件
+              </Button>
+            </>
+          ) : (
+            <>
+              <UploadCloud size={36} />
+              <strong>拖入文件，或从电脑选择</strong>
+              <span>支持 CSV、XLSX、PDF、DOCX、TXT、Markdown · 最大 15 MB</span>
+              <Button onClick={() => fileInputRef.current?.click()}>
+                选择文件
+              </Button>
+            </>
+          )}
+        </div>
+        <aside className="import-guidance">
+          <strong>两种处理方式</strong>
+          <ul>
+            <li>
+              <b>标准 CSV：</b>本地固定字段映射，不调用 Agent
+            </li>
+            <li>
+              <b>其他表格：</b>Agent 只识别表头，逐行处理仍在本地完成
+            </li>
+            <li>
+              <b>文字文档：</b>先在本地提取文字，再由 Agent 整理记录
+            </li>
+            <li>原文件不长期保存；确认后仍可按批次撤销</li>
+          </ul>
+        </aside>
+      </div>
+      <div className="import-actions">
+        <Button disabled={!file || busy} onClick={() => void generatePreview()}>
+          {busy && !preview ? "正在解析…" : "生成审核预览"}
+        </Button>
+        <Button
+          type="primary"
+          disabled={
+            !preview?.rows ||
+            preview.conflict_count > 0 ||
+            preview.confirmed ||
+            busy
+          }
+          onClick={() => void confirmImport()}
+        >
+          {preview?.confirmed
+            ? "已完成导入"
+            : `确认导入${preview?.total ? ` ${preview.total} 条` : ""}`}
+        </Button>
+      </div>
+      {preview?.rows && (
+        <section className="import-preview">
+          <div className="import-summary">
+            <div>
+              <strong>审核预览 · {preview.total} 条记录</strong>
+              <span>
+                {preview.parser === "local_standard"
+                  ? "标准模板 · 本地规则映射"
+                  : preview.parser === "agent_mapping"
+                    ? "Agent 已识别原表字段 · 请核对映射结果"
+                    : "Agent 已从文档整理记录 · 请核对原文与字段"}
+              </span>
+            </div>
+            <div>
+              <b>新增 {preview.created_count || 0}</b>
+              <b>更新 {preview.updated_count || 0}</b>
+              <b>跳过 {preview.unchanged_count || 0}</b>
+              <b className={preview.conflict_count ? "warning-text" : ""}>
+                冲突 {preview.conflict_count || 0}
+              </b>
+            </div>
+          </div>
+          {preview.parser === "agent_mapping" && (
+            <div className="import-mapping">
+              <strong>Agent 字段映射</strong>
+              <span>
+                {Object.entries(preview.mapping || {})
+                  .map(([source, target]) => `${source} → ${target}`)
+                  .join("　·　")}
+              </span>
+            </div>
+          )}
+          {preview.agent_warnings?.map((warning: string) => (
+            <p className="warning-text" key={warning}>
+              {warning}
+            </p>
+          ))}
+          <DataTable
+            data={preview.rows}
+            columns={[
+              { title: "行", dataIndex: "row_number", width: 60 },
+              {
+                title: "导入动作",
+                render: (_: any, row: any) => (
+                  <Tag
+                    color={
+                      row.import_action === "新增" ? "app-teal" : undefined
+                    }
+                  >
+                    {row.import_action || "已处理"}
+                  </Tag>
+                ),
+                width: 100,
+              },
+              { title: "合作对象", dataIndex: "media_name", width: 180 },
+              {
+                title: "项目",
+                render: (_: any, row: any) =>
+                  row.project_code || row.project_name || "—",
+                width: 150,
+              },
+              {
+                title: "执行状态",
+                render: (_: any, row: any) =>
+                  row.execution_status ? (
+                    <StatusTag value={row.execution_status} />
+                  ) : (
+                    "—"
+                  ),
+                width: 130,
+              },
+              {
+                title: "产品 / 物流",
+                render: (_: any, row: any) => (
+                  <div className="primary-cell">
+                    <strong>{row.product_bundle || "—"}</strong>
+                    <span>{row.tracking_number || "暂无物流单号"}</span>
+                  </div>
+                ),
+                width: 210,
+              },
+              {
+                title: "需确认",
+                render: (_: any, row: any) => row.warnings?.join("；") || "无",
+                width: 260,
+              },
+            ]}
+          />
+        </section>
+      )}
+      <div className="resource-section-heading">
+        <div>
+          <h3>导入批次</h3>
+          <p>每次确认导入都会留下独立记录，可以安全撤销。</p>
+        </div>
+        <span>{batches.length} 个批次</span>
+      </div>
+      <DataTable
+        data={batches}
+        columns={[
+          {
+            title: "文件",
+            render: (_: any, row: any) => (
+              <div className="primary-cell">
+                <strong>{row.filename || `批次 ${row.id}`}</strong>
+                <span>{new Date(row.created_at).toLocaleString()}</span>
+              </div>
+            ),
+            width: 300,
+          },
+          {
+            title: "类型",
+            render: (_: any, row: any) =>
+              row.import_type === "universal"
+                ? "统一导入"
+                : row.import_type === "execution"
+                  ? "费用执行表"
+                  : "媒体表",
+            width: 140,
+          },
+          {
+            title: "导入结果",
+            render: (_: any, row: any) =>
+              `新增 ${row.summary?.created_count || 0} · 更新 ${row.summary?.updated_count || 0} · 跳过 ${row.summary?.unchanged_count || 0}`,
+            width: 300,
+          },
+          {
+            title: "状态",
+            render: (_: any, row: any) => (
+              <Tag color={row.undone_at ? undefined : "app-teal"}>
+                {row.undone_at ? "已撤销" : row.status || "已完成"}
+              </Tag>
+            ),
+            width: 120,
+          },
+          {
+            title: "管理",
+            render: (_: any, row: any) =>
+              row.undone_at ? (
+                "—"
+              ) : (
+                <button className="table-action" onClick={() => void undo(row)}>
+                  撤销本批
+                </button>
+              ),
+            width: 120,
+          },
+        ]}
+      />
+    </section>
+  );
 }
 
 const rootElement = document.getElementById('root') as (HTMLElement & { __pangdunRoot?: ReturnType<typeof createRoot> }) | null;

@@ -21,17 +21,18 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import String, and_, func, or_
 from sqlalchemy.orm import Session, joinedload
 
-from .agent_service import AgentConfigurationError, AgentSourceError, agent_config, deepseek_json_extract, fetch_public_source, source_hash
+from .agent_service import AgentConfigurationError, AgentSourceError, agent_config, deepseek_json_extract, fetch_public_source, source_hash, test_deepseek_connection
 from .auth import CLI_TOKEN_EXPIRE_DAYS, clear_session_cookie, create_cli_token, current_user, hash_password, require_roles, set_session_cookie, verify_password
 from .database import Base, apply_compat_migrations, engine, get_db
 from .content_monitor_service import monitor_runtime_status, run_content_monitor, start_content_monitor, stop_content_monitor
 from .execution_importer import confirm_execution_import, preview_execution_import
 from .importer import confirm_import, preview_import
-from .models import Activity, AgentRun, AuditLog, Campaign, CampaignStageEvent, Contact, CostItem, Deliverable, DeliverablePerformanceSnapshot, ImportBatch, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
+from .universal_importer import confirm_universal_import, create_universal_preview, template_csv_bytes
+from .models import Activity, AgentRun, AuditLog, Campaign, CampaignStageEvent, Contact, CostItem, Deliverable, DeliverablePerformanceSnapshot, ImportBatch, IntegrationHealth, Media, Product, Project, ProjectProduct, Shipment, ShipmentItem, ShippingAddress, User
 from .media_taxonomy import COOPERATION_STATUSES, COUNTRIES, MEDIA_CHANNELS, VERIFICATION_STATUSES, infer_audience_metric_type, metric_value_in_k, normalize_channel, normalize_cooperation_status, normalize_country, normalize_media_payload
 from .profile_links import clean_profile_links, profile_identity
 from .social_identity_service import SocialIdentityError, fetch_social_identity, merge_social_identity_proposal, social_platform
-from .youtube_service import YouTubeConfigurationError, YouTubeSourceError, fetch_youtube_channel, is_youtube_url, merge_youtube_proposal
+from .youtube_service import YouTubeConfigurationError, YouTubeSourceError, fetch_youtube_channel, is_youtube_url, merge_youtube_proposal, test_youtube_connection
 from .product_backfill import backfill_products, ensure_project_link, find_or_create_product, find_product_matches, product_aliases, product_identity
 from .schemas import (
     CampaignBase,
@@ -462,9 +463,59 @@ def agent_run_payload(row: AgentRun) -> dict[str, Any]:
     }
 
 
+def integration_test_payload(row: IntegrationHealth | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "status": row.status,
+        "message": row.message,
+        "tested_at": f"{row.tested_at.isoformat()}Z",
+    }
+
+
 @app.get("/api/agent/status")
-def agent_status(user: Annotated[User, Depends(current_user)]):
-    return agent_config()
+def agent_status(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(current_user)],
+):
+    config = agent_config()
+    health = {row.provider: row for row in db.query(IntegrationHealth).all()}
+    config["last_test"] = integration_test_payload(health.get("deepseek"))
+    config["youtube"]["last_test"] = integration_test_payload(health.get("youtube"))
+    return config
+
+
+@app.post("/api/integrations/{provider}/test")
+def test_integration(
+    provider: str,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin"))],
+):
+    testers = {
+        "deepseek": test_deepseek_connection,
+        "youtube": test_youtube_connection,
+    }
+    tester = testers.get(provider.casefold())
+    if not tester:
+        raise HTTPException(404, "不支持的集成服务")
+    try:
+        message = tester()
+        test_status = "connected"
+    except (AgentConfigurationError, YouTubeConfigurationError, AgentSourceError, YouTubeSourceError, RuntimeError) as exc:
+        message = str(exc)[:255]
+        test_status = "failed"
+    row = db.query(IntegrationHealth).filter(IntegrationHealth.provider == provider.casefold()).one_or_none()
+    if not row:
+        row = IntegrationHealth(provider=provider.casefold(), status=test_status)
+        db.add(row)
+    row.status = test_status
+    row.message = message
+    row.tested_at = datetime.utcnow()
+    row.tested_by_id = user.id
+    add_audit_log(db, user, "test_connection", "integration", provider.casefold(), after={"status": test_status})
+    db.commit()
+    db.refresh(row)
+    return {"ok": test_status == "connected", **(integration_test_payload(row) or {})}
 
 
 @app.get("/api/agent/runs")
@@ -1562,6 +1613,7 @@ def project_detail_payload(item: Project) -> dict:
         "end_date": item.end_date,
         "budget_amount": item.budget_amount,
         "budget_currency": item.budget_currency,
+        "collaboration_tag": item.collaboration_tag,
         "notes": item.notes,
         "is_archived": item.is_archived,
         "archived_at": item.archived_at,
@@ -2835,6 +2887,16 @@ def undo_import_batch(
             removed += 1
         elif action.get("kind") == "update" and entity:
             for field, old_value in (action.get("before") or {}).items():
+                column = model.__table__.columns.get(field)
+                if old_value is not None and column is not None:
+                    try:
+                        python_type = column.type.python_type
+                        if python_type is date and isinstance(old_value, str):
+                            old_value = date.fromisoformat(old_value)
+                        elif python_type is datetime and isinstance(old_value, str):
+                            old_value = datetime.fromisoformat(old_value)
+                    except (AttributeError, NotImplementedError, ValueError):
+                        pass
                 setattr(entity, field, old_value)
             restored += 1
     batch.status = "undone"
@@ -2864,6 +2926,42 @@ async def execution_import_preview(db: Annotated[Session, Depends(get_db)], user
 @app.post("/api/execution-import/confirm")
 async def execution_import_confirm(db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(require_roles("Admin"))], file: UploadFile = File(...)):
     return confirm_execution_import(db, await file.read(), file.filename, user.id)
+
+
+@app.get("/api/universal-import/template.csv")
+def universal_import_template(user: Annotated[User, Depends(require_roles("Admin"))]):
+    return Response(
+        content=template_csv_bytes(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=pangdun_crm_import_template.csv"},
+    )
+
+
+@app.post("/api/universal-import/preview")
+async def universal_import_preview(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin"))],
+    file: UploadFile = File(...),
+):
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(413, "单个文件不能超过 15 MB")
+    try:
+        return create_universal_preview(db, content, file.filename or "未命名文件", user.id)
+    except (ValueError, RuntimeError, AgentConfigurationError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/universal-import/{draft_id}/confirm")
+def universal_import_confirm(
+    draft_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_roles("Admin"))],
+):
+    try:
+        return confirm_universal_import(db, draft_id, user)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 if FRONTEND_DIST.exists():

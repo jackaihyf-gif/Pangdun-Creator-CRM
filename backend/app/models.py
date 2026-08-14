@@ -175,6 +175,7 @@ class Project(Base):
     end_date: Mapped[date | None] = mapped_column(Date)
     budget_amount: Mapped[float | None] = mapped_column(Float)
     budget_currency: Mapped[str | None] = mapped_column(String(20), default="CNY")
+    collaboration_tag: Mapped[str] = mapped_column(String(120), default="#MAXSUN")
     notes: Mapped[str | None] = mapped_column(Text)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -277,6 +278,19 @@ class AgentRun(Base):
     user = relationship("User", foreign_keys=[user_id])
     reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])
     target_media = relationship("Media")
+
+
+class IntegrationHealth(Base):
+    __tablename__ = "integration_health"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    provider: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tested_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+    tested_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    tested_by = relationship("User")
 
 
 class Shipment(Base):

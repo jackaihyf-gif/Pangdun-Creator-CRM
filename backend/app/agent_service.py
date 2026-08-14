@@ -60,6 +60,40 @@ def agent_config() -> dict[str, Any]:
     }
 
 
+def test_deepseek_connection() -> str:
+    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        raise AgentConfigurationError("尚未配置 DEEPSEEK_API_KEY")
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [{"role": "user", "content": "Reply only: OK"}],
+        "thinking": {"type": "disabled"},
+        "temperature": 0,
+        "max_tokens": 4,
+        "stream": False,
+    }
+    try:
+        with httpx.Client(timeout=30) as client:
+            response = client.post(
+                f"{DEEPSEEK_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+        if response.status_code in {401, 403}:
+            raise AgentConfigurationError("DeepSeek API Key 无效或无访问权限")
+        response.raise_for_status()
+        body = response.json()
+        if not body.get("choices"):
+            raise RuntimeError("DeepSeek 返回了异常响应")
+    except httpx.TimeoutException as exc:
+        raise RuntimeError("连接 DeepSeek 超时") from exc
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(f"DeepSeek 连接失败（HTTP {exc.response.status_code}）") from exc
+    except httpx.RequestError as exc:
+        raise RuntimeError("无法连接 DeepSeek 服务") from exc
+    return f"{DEEPSEEK_MODEL} 可用"
+
+
 def source_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -191,6 +225,44 @@ def deepseek_json_extract(content: str, source_label: str) -> tuple[dict[str, An
     except json.JSONDecodeError as exc:
         raise RuntimeError("模型没有返回有效 JSON") from exc
     return normalize_agent_proposal(result, source_label), body.get("usage") or {}
+
+
+def deepseek_json_object(system_prompt: str, user_prompt: str, *, max_tokens: int = 5000) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run a constrained JSON task without coupling it to the media profile schema."""
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise AgentConfigurationError("尚未配置 DEEPSEEK_API_KEY")
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt[:MAX_SOURCE_CHARS]},
+        ],
+        "response_format": {"type": "json_object"},
+        "thinking": {"type": "disabled"},
+        "temperature": 0.05,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    with httpx.Client(timeout=90) as client:
+        response = client.post(
+            f"{DEEPSEEK_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        response.raise_for_status()
+    body = response.json()
+    choice = (body.get("choices") or [{}])[0]
+    if choice.get("finish_reason") == "length":
+        raise RuntimeError("模型输出被截断，请减少文件内容后重试")
+    raw = ((choice.get("message") or {}).get("content") or "").strip()
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("模型没有返回有效 JSON") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("模型返回的 JSON 结构不正确")
+    return result, body.get("usage") or {}
 
 
 def normalize_agent_proposal(raw: dict[str, Any], source_label: str) -> dict[str, Any]:

@@ -2,6 +2,16 @@ from backend.app.database import SessionLocal
 from backend.app.models import Activity, Campaign, CampaignStageEvent, Shipment
 
 
+def test_project_collaboration_tag_is_normalized_and_saved(client, seeded_collaboration):
+    response = client.put(
+        f"/api/projects/{seeded_collaboration['project_id']}",
+        headers=seeded_collaboration["headers"],
+        json={"name": "Test Launch", "status": "Active", "collaboration_tag": "launch2026"},
+    )
+    assert response.status_code == 200
+    assert response.json()["collaboration_tag"] == "#launch2026"
+
+
 def test_collaboration_patch_saves_follow_up_and_shipment(client, seeded_collaboration):
     campaign_id = seeded_collaboration["campaign_id"]
     headers = seeded_collaboration["headers"]

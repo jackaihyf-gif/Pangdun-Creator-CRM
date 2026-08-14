@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ORMModel(BaseModel):
@@ -153,7 +153,20 @@ class ProjectBase(BaseModel):
     end_date: date | None = None
     budget_amount: float | None = None
     budget_currency: str | None = "CNY"
+    collaboration_tag: str = "#MAXSUN"
     notes: str | None = None
+
+    @field_validator("collaboration_tag", mode="before")
+    @classmethod
+    def normalize_collaboration_tag(cls, value: Any) -> str:
+        tag = str(value or "").strip()
+        if not tag:
+            return "#MAXSUN"
+        if not tag.startswith("#"):
+            tag = f"#{tag}"
+        if len(tag) > 120 or len(tag) == 1 or any(char.isspace() for char in tag) or "#" in tag[1:]:
+            raise ValueError("合作 Tag 必须是一个不含空格的完整话题标签，例如 #MAXSUN")
+        return tag
 
 
 class ProjectOut(ProjectBase, ORMModel):
