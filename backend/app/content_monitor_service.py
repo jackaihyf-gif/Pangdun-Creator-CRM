@@ -117,10 +117,19 @@ def fetch_channel_videos(channel_id: str, client: httpx.Client, max_results: int
     return videos
 
 
-def description_has_tag(description: str, tag: str) -> bool:
+def text_has_tag(text: str, tag: str) -> bool:
     if not tag:
         return False
-    return bool(re.search(rf"(?<![\w]){re.escape(tag)}(?![\w])", description, flags=re.IGNORECASE))
+    return bool(re.search(rf"(?<![\w]){re.escape(tag)}(?![\w])", text, flags=re.IGNORECASE))
+
+
+def description_has_tag(description: str, tag: str) -> bool:
+    """Backward-compatible helper retained for callers that only inspect descriptions."""
+    return text_has_tag(description, tag)
+
+
+def video_has_tag(video: YouTubeVideo, tag: str) -> bool:
+    return text_has_tag(video.title, tag) or text_has_tag(video.description, tag)
 
 
 def youtube_video_id(url: str | None) -> str | None:
@@ -279,7 +288,7 @@ def run_content_monitor(db: Session, client: httpx.Client | None = None, capture
                     campaign for campaign in media_campaigns
                     if (window := campaign_monitor_window(campaign, config))
                     and window[0] <= video.published_at.date() <= window[1]
-                    and description_has_tag(video.description, campaign_collaboration_tag(campaign, config))
+                    and video_has_tag(video, campaign_collaboration_tag(campaign, config))
                 ]
                 if not matching_campaigns:
                     continue

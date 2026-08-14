@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
-from backend.app.content_monitor_service import description_has_tag, run_content_monitor
+from backend.app.content_monitor_service import YouTubeVideo, description_has_tag, run_content_monitor, video_has_tag
 from backend.app.database import SessionLocal
 from backend.app.models import Campaign, Deliverable, DeliverablePerformanceSnapshot, Media
 
@@ -27,8 +27,8 @@ def youtube_transport(state: dict):
                 "id": "video-monitor-1",
                 "snippet": {
                     "channelId": "UC-MONITOR-1",
-                    "title": "Pangdun collaboration",
-                    "description": "Thanks to our partner #Pangdun for supporting this video.",
+                    "title": state.get("title", "Pangdun collaboration"),
+                    "description": state.get("description", "Thanks to our partner #Pangdun for supporting this video."),
                     "publishedAt": state["published_at"],
                 },
                 "statistics": {"viewCount": state["views"], "likeCount": "120", "commentCount": "15"},
@@ -52,6 +52,28 @@ def test_exact_standard_tag_does_not_match_longer_hashtag():
     assert description_has_tag("Sponsored by #Pangdun", "#Pangdun")
     assert description_has_tag("sponsored by #pangdun!", "#Pangdun")
     assert not description_has_tag("Sponsored by #PangdunPlus", "#Pangdun")
+
+
+def test_video_tag_can_appear_in_title_or_description():
+    published = datetime(2026, 8, 14)
+    assert video_has_tag(YouTubeVideo("1", "UC1", "Review #MAXSUN", "", published, None, None, None), "#MAXSUN")
+    assert video_has_tag(YouTubeVideo("2", "UC1", "Review", "Partner: #maxsun", published, None, None, None), "#MAXSUN")
+    assert not video_has_tag(YouTubeVideo("3", "UC1", "Review #MAXSUNPlus", "", published, None, None, None), "#MAXSUN")
+
+
+def test_monitor_accepts_tag_in_title_only(seeded_collaboration, monkeypatch):
+    monkeypatch.setenv("YOUTUBE_API_KEY", "test-key")
+    configure_media_profile(seeded_collaboration["media_id"], seeded_collaboration["campaign_id"])
+    state = {
+        "published_at": "2026-08-14T00:00:00Z",
+        "views": "1000",
+        "title": "New product review #Pangdun",
+        "description": "No collaboration tag in this description.",
+    }
+    with httpx.Client(transport=youtube_transport(state)) as client, SessionLocal() as db:
+        result = run_content_monitor(db, client, datetime(2026, 8, 14, 10, 0, 0))
+        assert result["matched"] == 1
+        assert db.query(Deliverable).one().title == "New product review #Pangdun"
 
 
 def test_monitor_matches_once_and_stops_after_day_three(seeded_collaboration, monkeypatch):
