@@ -2,8 +2,21 @@
 setlocal
 cd /d "%~dp0"
 
+if /I "%~1"=="--worker" goto :run
+if /I "%~1"=="--foreground" goto :run
+
+start "" wscript.exe "%~dp0start-hidden.vbs"
+exit /b 0
+
+:run
+title Pangdun CRM
 echo.
 echo === Pangdun KOL CRM ===
+
+if /I "%~1"=="--worker" if not exist backend\data\kol_crm.db exit /b 20
+
+powershell -NoProfile -Command "try { if ((Invoke-WebRequest -Uri 'http://127.0.0.1:8000/api/health' -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { exit 0 } } catch {}; exit 1" >nul 2>nul
+if not errorlevel 1 exit /b 0
 
 set PYTHON_CMD=
 where python >nul 2>nul
@@ -67,8 +80,8 @@ echo.
 echo Local access: http://127.0.0.1:8000
 if defined LAN_IP echo LAN access:   http://%LAN_IP%:8000
 echo.
-echo Keep this window open while using CRM.
+if /I "%~1"=="--foreground" echo Keep this window open while using CRM.
 echo.
 
 python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
-pause
+if /I "%~1"=="--foreground" pause

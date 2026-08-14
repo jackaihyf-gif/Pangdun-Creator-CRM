@@ -2968,6 +2968,16 @@ if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon_ico():
+    return FileResponse(FRONTEND_DIST / "favicon.ico", media_type="image/x-icon")
+
+
+@app.get("/favicon.png", include_in_schema=False)
+def favicon_png():
+    return FileResponse(FRONTEND_DIST / "favicon.png", media_type="image/png")
+
+
 @app.get("/{path:path}")
 def spa(path: str):
     index = FRONTEND_DIST / "index.html"

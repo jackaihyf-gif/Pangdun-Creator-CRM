@@ -178,6 +178,8 @@ YouTube 内容履约监测采用确定性脚本，不调用 Agent：系统每 6 
 start.bat
 ```
 
+默认启动方式会调用 `start-hidden.vbs`，在后台完成依赖检查、前端构建和 Uvicorn 启动，健康检查通过后自动打开浏览器，并在桌面创建使用 `frontend/public/favicon.ico` 的 `Pangdun CRM` 快捷方式。全新空库首次创建管理员时会显示一次前台安装窗口；需要观察启动过程可运行 `start.bat --foreground`。后台服务使用 `stop.bat` 关闭，启动日志位于 `backend/data/crm-start.log`。
+
 本机地址：<http://127.0.0.1:8000>
 
 前端构建：
@@ -226,5 +228,6 @@ pangdun.cmd collab update 36 --status 运输中 --apply --reason "物流已确�
 - 完整业务数据推荐通过 SQLite 快照交付，而不是压成一张 CSV。运行根目录 `backup.bat` 会使用 SQLite 在线备份接口，在 CRM 运行时生成一致快照，自动执行完整性检查并生成 SHA-256 文件。
 - 将 `backups/kol_crm_backup_*.db` 与同名 `.sha256` 通过可信私有渠道交给接收方。不要发送 `agent.env`；接收方应使用自己的 DeepSeek 与 YouTube API 密钥。
 - 接收方将快照复制为 `backend/data/kol_crm.db` 后运行 `start.bat`，或将快照放入 `backups` 并使用 `restore.bat`。启动后核对核心数据数量并重新登录 CLI/MCP。
+- 首次运行 `start.bat` 会创建带胖墩西高地图标的桌面快捷方式；之后接收方不需要面对或保留命令行窗口。
 - 完整数据库包含联系人、收件地址、用户密码哈希、合作与审计记录。外部交付必须使用加密传输；只需要媒体名录时应另做脱敏 CSV。
 - 正式交付前至少完成一次：全量测试、前端生产构建、在线备份、备份完整性验证、SHA-256 对比和恢复演练。
